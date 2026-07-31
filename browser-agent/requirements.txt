@@ -1,0 +1,8 @@
+# Browser research agent — raw Anthropic API loop + Playwright MCP
+#
+# anthropic — the Messages API client (runs the tool-use loop)
+# mcp       — the Model Context Protocol client (spawns & talks to the Playwright MCP server)
+# python-dotenv — loads ANTHROPIC_API_KEY from a .env file
+anthropic>=0.40
+mcp>=1.2
+python-dotenv>=1.0
