@@ -237,10 +237,10 @@ cd mock-store && python3 -m http.server 8000
 python src/browser_agent.py "Go to http://localhost:8000, add a Prismatic Evolutions Elite Trainer Box to the cart, and report the cart total"
 ```
 
-It's built to be published to GitHub Pages later (all paths relative), so the
-agent can hit a real URL. See [mock-store/README.md](mock-store/README.md) for
-the built-in test scenarios — purchase limits, out-of-stock dead ends, empty
-cart, search misses.
+It's also **live at https://arnv15.github.io/Sentinel/mock-store/**, so the agent
+can hit a real URL with no local server running. See
+[mock-store/README.md](mock-store/README.md) for the built-in test scenarios —
+purchase limits, out-of-stock dead ends, empty cart, search misses.
 
 Deeper context — architecture, every decision and why, current state, next steps
 — lives in **[browser-agent.md](browser-agent.md)**.

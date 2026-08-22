@@ -47,11 +47,21 @@ Then point the agent at `http://localhost:8000/index.html`.
 python src/browser_agent.py "Go to http://localhost:8000, find the Prismatic Evolutions Elite Trainer Box, add one to the cart, and tell me the cart total"
 ```
 
-## Publish to GitHub Pages
+## Live on GitHub Pages
 
-Every path is relative, so the site works unchanged from a subdirectory. In the
-repo settings enable Pages for the `main` branch, root folder — the store is then
-at `https://<user>.github.io/Sentinel/mock-store/`. No build step.
+**https://arnv15.github.io/Sentinel/mock-store/**
+
+Pages is enabled on `main` / root, with `.nojekyll` at the repo root so the files
+are served as-is. Every path is relative, so the site works unchanged from the
+`/Sentinel/mock-store/` subdirectory — verified live. No build step: pushing to
+`main` redeploys.
+
+Point the agent at the public URL instead of localhost when you want to test
+without running a local server:
+
+```bash
+python src/browser_agent.py "Go to https://arnv15.github.io/Sentinel/mock-store/ and add a Prismatic Evolutions Elite Trainer Box to the cart"
+```
 
 ## Built-in test scenarios
 
