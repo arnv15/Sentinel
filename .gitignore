@@ -8,3 +8,6 @@ __pycache__/
 
 # Editors / OS
 .DS_Store
+
+# Playwright MCP run artifacts (a11y dumps, console logs)
+.playwright-mcp/

@@ -12,8 +12,9 @@ trigger the browser agent to research a restock hit).
 1. **Scraper** (`src/scraper.py`) — a Discord→Telegram restock-alert
    monitor. Python, async, built on `discord.py-self` + `aiohttp`.
 2. **Browser Research Agent** (`src/browser_agent.py`) — an AI agent that
-   drives Chromium via Playwright MCP through a raw Anthropic Messages API
-   tool-use loop. Python, async, `anthropic` + `mcp`.
+   drives Chromium via Playwright MCP through a raw, provider-agnostic tool-use
+   loop. Python, async, `openai` + `anthropic` + `mcp`. Defaults to Gemini's
+   free tier; `LLM_PROVIDER` switches providers without code changes.
 
 ## Layout
 
@@ -76,7 +77,7 @@ There is **no test suite yet**. Minimum bar before committing:
   place to add `pytest` unit tests if you introduce tests.
 - The browser agent can be smoke-tested without an API key by listing MCP tools
   (spawn `npx @playwright/mcp@latest --headless`, `initialize`, `list_tools`);
-  a live run needs `ANTHROPIC_API_KEY`.
+  a live run needs a key for the configured provider (default `GEMINI_API_KEY`).
 - **Test agent runs against `mock-store/`, never a real retailer** — serve it with
   `cd mock-store && python3 -m http.server 8000`. It is a static fake storefront
   with no backend; its checkout deliberately submits nowhere. If you extend it,
@@ -93,9 +94,15 @@ There is **no test suite yet**. Minimum bar before committing:
 - **Secrets/config:** read via `os.environ.get(...)` with `python-dotenv`
   `load_dotenv()` already wired in. Add new config the same way and document it
   in `.env.example`.
-- **Models (browser agent):** the model id is the `MODEL` constant at the top of
-  `src/browser_agent.py` (currently `claude-sonnet-5`). Use current
-  Anthropic model ids; don't invent them.
+- **Models (browser agent):** provider + model come from `LLM_PROVIDER` /
+  `LLM_MODEL` in `.env`, with defaults in the `PROVIDERS` table at the top of
+  `src/browser_agent.py` (default: `gemini` / `gemini-3.7-flash`). The loop is
+  provider-agnostic — all non-Anthropic providers go through the OpenAI
+  Chat Completions adapter. Don't invent model ids.
+- **MCP attribute names:** the `mcp` package exposes **snake_case** attributes
+  (`input_schema`, `is_error`, `mime_type`); the camelCase spellings are wire
+  aliases only and reading them silently misbehaves. Go through the `_attr()` /
+  `tool_schema()` helpers.
 
 ## Key files
 

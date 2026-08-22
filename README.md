@@ -46,7 +46,8 @@ cp .env.example .env               # then fill in the values you need
 | `TARGET_CHANNEL_ID`  | 1     | Enable Developer Mode in Discord → right-click the channel → _Copy ID_.                                                               |
 | `TELEGRAM_BOT_TOKEN` | 1     | Create a bot with [@BotFather](https://t.me/BotFather).                                                                               |
 | `TELEGRAM_CHAT_IDS`  | 1     | Comma-separated. Have each recipient message the bot once, then read `chat.id` from `https://api.telegram.org/bot<TOKEN>/getUpdates`. |
-| `ANTHROPIC_API_KEY`  | 2     | [console.anthropic.com/settings/keys](https://console.anthropic.com/settings/keys)                                                    |
+| `LLM_PROVIDER`       | 2     | Which model drives the agent. Defaults to `gemini`.                                                                                   |
+| `GEMINI_API_KEY`     | 2     | **Free**, no credit card: [aistudio.google.com/apikey](https://aistudio.google.com/apikey)                                             |
 
 One `.env` serves both phases — leave a section blank if you only run one.
 
@@ -138,16 +139,37 @@ and everyone else is just a Telegram recipient.
 
 # Phase 2 — Browser Research Agent
 
-An AI agent that drives a **real Chromium browser** to research the web. Claude
-decides what to do; [Playwright MCP](https://github.com/microsoft/playwright-mcp)
-is the "hands" that navigate, click, and read pages. Built as a **raw Anthropic
-Messages API tool-use loop** (no higher-level framework) for full control over
-the loop, prompting, and guardrails.
+An AI agent that drives a **real Chromium browser** to research the web. The
+model decides what to do; [Playwright MCP](https://github.com/microsoft/playwright-mcp)
+is the "hands" that navigate, click, and read pages. Built as a **raw tool-use
+loop** (no higher-level framework) for full control over the loop, prompting,
+and guardrails.
+
+### Choosing a model provider
+
+The loop is provider-agnostic. Everything except Anthropic speaks the OpenAI
+Chat Completions format, so switching is a `.env` change, not a code change:
+
+| `LLM_PROVIDER` | Cost | Key |
+| --- | --- | --- |
+| `gemini` *(default)* | **Free tier** | `GEMINI_API_KEY` — [aistudio.google.com/apikey](https://aistudio.google.com/apikey) |
+| `groq` | Free tier, fastest | `GROQ_API_KEY` |
+| `cerebras` | Free tier, high throughput | `CEREBRAS_API_KEY` |
+| `openrouter` | Some free models | `OPENROUTER_API_KEY` |
+| `github` | Free w/ GitHub account | `GITHUB_TOKEN` |
+| `ollama` | Fully local | none |
+| `anthropic` | Paid | `ANTHROPIC_API_KEY` |
+
+> **Note:** a Google AI Pro / Gemini Advanced subscription does **not** include
+> API access — that's a consumer chat plan. The API key is separate and its free
+> tier is open to any Google account. On the free tier Google uses submitted
+> content to improve its products, so keep free-tier runs pointed at test
+> fixtures like MockMart rather than anything sensitive.
 
 ```
 ┌──────────────────┐  tool call   ┌──────────────┐  Playwright   ┌──────────┐
 │ browser_agent.py │ ───────────► │ Playwright   │ ────────────► │ Chromium │
-│    + Claude      │              │ MCP server   │               │ (headed) │
+│   + your model   │              │ MCP server   │               │ (headed) │
 │     (loop)       │ ◄─────────── │ (npx subproc)│ ◄──────────── │          │
 └──────────────────┘  a11y tree   └──────────────┘   DOM/a11y     └──────────┘
 ```
@@ -155,11 +177,11 @@ the loop, prompting, and guardrails.
 1. `browser_agent.py` spawns `npx @playwright/mcp` as a subprocess (MCP over stdio).
 2. That server exposes browser actions as tools — `browser_navigate`,
    `browser_click`, `browser_type`, `browser_snapshot`, etc.
-3. We hand those tools to the Claude Messages API. Claude reads the page as an
+3. We hand those tools to the configured model. It reads the page as an
    **accessibility tree** (structured text, not screenshots), picks an action,
    and we execute it.
-4. Repeat until Claude has the answer. There is no AI in the MCP server — all
-   the reasoning is the Claude call inside `run_agent()`.
+4. Repeat until the model has the answer. There is no AI in the MCP server — all
+   the reasoning is the single model call inside `run_agent()`.
 
 ### One-time browser download
 
@@ -192,9 +214,9 @@ so you can watch it work.
 
 ### Tuning
 
-- **Model** — `MODEL` at the top of `browser_agent.py`. `claude-sonnet-5`
-  (default) is a good balance; `claude-opus-4-8` for hardest reasoning;
-  `claude-haiku-4-5-20251001` for speed/cost.
+- **Model** — set `LLM_PROVIDER` and optionally `LLM_MODEL` in `.env`; defaults
+  per provider live in the `PROVIDERS` table at the top of `browser_agent.py`.
+  `LLM_BASE_URL` points at any other OpenAI-compatible endpoint.
 - **Headless** — remove `"--headed"` from the `args` list in `run_agent()` to run
   with no visible window (for servers / unattended use).
 - **More tools** — Playwright MCP has flags for tabs, file uploads, PDF, etc.

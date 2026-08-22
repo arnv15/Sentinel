@@ -17,10 +17,11 @@ Today it runs standalone from the CLI. The plan is for Phase 1
 research task — which is why both phases share one package, one venv, and one
 `.env`.
 
-- **Claude** decides what to do (navigate, click, read, extract).
+- **The configured LLM** decides what to do (navigate, click, read, extract).
+  Default is Gemini's free tier; see the provider table in `browser_agent.py`.
 - **[Playwright MCP](https://github.com/microsoft/playwright-mcp)** is the "hands"
   — it exposes browser actions as tools and executes them in Chromium.
-- The connective tissue is a **raw Anthropic Messages API tool-use loop** (we
+- The connective tissue is a **raw, provider-agnostic tool-use loop** (we
   deliberately did NOT use a higher-level framework — see decisions).
 
 ## 2. Architecture (three layers)
@@ -28,7 +29,7 @@ research task — which is why both phases share one package, one venv, and one
 ```
 ┌──────────────────┐   MCP/JSON-RPC   ┌──────────────────┐   CDP over    ┌──────────────┐
 │ browser_agent.py │   over stdio     │ @playwright/mcp  │   WebSocket   │  Chromium    │
-│    + Claude      │ ───────────────► │ (Node subprocess)│ ────pipe────► │  (bundled)   │
+│   + your model   │ ───────────────► │ (Node subprocess)│ ────pipe────► │  (bundled)   │
 │     (the loop)   │ ◄─────────────── │ = Playwright lib │ ◄──────────── │  headed win  │
 └──────────────────┘  tool results    └──────────────────┘   DOM events  └──────────────┘
      Python                                Node.js                        separate process
@@ -46,8 +47,8 @@ research task — which is why both phases share one package, one venv, and one
    package.
 
 **Key runtime fact:** the browser binary launches only on the first
-`browser_navigate`, NOT when tools are listed. Page state is returned to Claude as
-an **accessibility tree** (structured text with element `ref`s), not screenshots —
+`browser_navigate`, NOT when tools are listed. Page state is returned to the model
+as an **accessibility tree** (structured text with element `ref`s), not screenshots —
 cheaper and more reliable than vision-based clicking.
 
 ## 3. Decisions made (and why)
@@ -55,10 +56,11 @@ cheaper and more reliable than vision-based clicking.
 | Decision            | Choice                                                      | Why                                                                                                                                                                               |
 | ------------------- | ----------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Overall approach    | Playwright MCP + own agent loop (vs. `browser-use` library) | Full control over the loop, prompting, guardrails, model choice. `browser-use` bundles its own loop/prompt and is harder to customize. Same architecture Claude Code itself uses. |
-| Agent loop          | **Raw Anthropic Messages API** (vs. Claude Agent SDK)       | User explicitly chose maximum control / to see the mechanics, accepting more boilerplate.                                                                                         |
+| Agent loop          | **Raw tool-use loop** (vs. an agent framework)              | User explicitly chose maximum control / to see the mechanics, accepting more boilerplate.                                                                                        |
+| Provider            | **Provider-agnostic via OpenAI Chat Completions**           | Free tiers churn; adapting once to the OpenAI format makes Gemini/Groq/Cerebras/OpenRouter/GitHub/Ollama a `.env` switch. Anthropic keeps a native adapter.                       |
 | Browser mode        | **Headed** (visible window)                                 | User wants to watch it work; best for learning/debugging. Toggle to headless by removing `"--headed"` from args in `run_agent()`.                                                 |
 | Page representation | Accessibility tree (Playwright MCP default)                 | Faster/cheaper/more reliable than screenshots.                                                                                                                                    |
-| Model default       | `claude-sonnet-5`                                           | Good balance for tool-use loops. `MODEL` constant at the top of the module.                                                                                                       |
+| Model default       | `gemini-3.7-flash` (free tier)                              | Free, 1M context, and 1M TPM — which matters because this loop re-sends a growing history of a11y trees every step. `PROVIDERS` table at the top of the module.                   |
 | Repo layout         | Flat `src/`, one venv, one `.env` (was two sub-projects)    | The two phases are meant to connect; both scripts sitting in `src/` makes `from browser_agent import run_agent` trivial and removes duplicate config.                             |
 
 ## 4. Current state — what's DONE vs PENDING
@@ -74,13 +76,30 @@ cheaper and more reliable than vision-based clicking.
 - **Chromium downloaded** — Chrome for Testing 151.0.7922.34 cached in
   `~/Library/Caches/ms-playwright/chromium-1234` (plus headless shell + ffmpeg).
 - Committed to git and restructured into the unified layout.
+- **Provider refactor done** — `OpenAIAdapter` / `AnthropicAdapter` behind one
+  loop; `LLM_PROVIDER`, `LLM_MODEL`, `LLM_BASE_URL` in `.env`.
+- **Fixed a latent crash:** the original code read `t.inputSchema`,
+  `result.isError`, and `item.mimeType`. In `mcp` 1.28 those are only JSON wire
+  aliases — the Python attributes are `input_schema` / `is_error` / `mime_type`.
+  `t.inputSchema` raised `AttributeError` on the very first `list_tools()`
+  conversion, so the agent could never have completed a run. Now read through
+  `_attr()` / `tool_schema()`, which accept either spelling.
+- **Schema sanitizing added and verified:** Playwright MCP's 24 tool schemas
+  contain `$schema`, `additionalProperties`, and `default`, all of which Gemini
+  rejects. `sanitize_schema()` whitelists the portable subset; verified that
+  zero rejected keys survive across all 24 tools.
+- **Loop verified end-to-end against MockMart** with a scripted mock LLM: 24
+  tools listed, 6 tool calls executed through real Playwright MCP, correct
+  `system → user → assistant(tool_calls) → tool` threading, real accessibility
+  trees (6 KB) flowing back, clean termination.
 
 ### Pending ⏳
 
-1. **ANTHROPIC_API_KEY not set** — no `.env` yet. BLOCKS any live run.
-   `cp .env.example .env` and paste a key from
-   https://console.anthropic.com/settings/keys.
-2. **No live end-to-end run yet** — never executed a real task (blocked on #1).
+1. **No API key set** — no `.env` yet. BLOCKS any live run. `cp .env.example .env`
+   and paste a free Gemini key from https://aistudio.google.com/apikey.
+2. **No live run against a real model yet** — the loop has been verified against a
+   scripted mock LLM (see below), but never against Gemini itself. Expect to shake
+   out provider quirks on the first real run.
 
 ### Known intentional deviation ⚠️
 
@@ -149,7 +168,11 @@ A Chromium window opens so you can watch. With no CLI arg it prompts for a task.
 2. **Headless toggle** — expose `--headed`/headless as a CLI flag or env var.
 3. **Save output to a report file** (e.g. Markdown) instead of just stdout.
 4. **Wire Phase 1 → Phase 2** — have `scraper.py` call `run_agent()` on a restock
-   hit. This is the reason for the shared package layout.
+   hit. Both scripts live in `src/`, so it's a plain import.
+5. **Trim history between steps** — `messages` grows unboundedly; every step
+   re-sends every prior a11y tree. On a 40-step run that is the main driver of
+   token spend and the most likely way to hit a free-tier TPM ceiling. Dropping
+   all but the most recent snapshot would cut it sharply.
 
 ## 9. Safety notes for whoever runs this
 
