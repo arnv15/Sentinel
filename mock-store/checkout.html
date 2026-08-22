@@ -1,0 +1,175 @@
+<!doctype html>
+<!--
+  MockMart — STATIC DEMO CHECKOUT.
+
+  This form does NOT submit anywhere. There is no action, no fetch, no XHR, and
+  no backend of any kind. Values are never stored or transmitted; "Place Order"
+  simply clears the local cart and renders a fake confirmation page.
+
+  Fields are pre-filled with well-known dummy test values so an automated agent
+  can walk the flow without anyone ever typing real details. Do not enter real
+  personal or payment information into this page.
+-->
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex, nofollow">
+  <title>Checkout — MockMart</title>
+  <link rel="stylesheet" href="assets/styles.css">
+</head>
+<body>
+  <div id="site-header"></div>
+
+  <main class="wrap" id="main">
+    <p class="crumbs"><a href="index.html">Home</a> &rsaquo; <a href="cart.html">Cart</a> &rsaquo; Checkout</p>
+    <h1>Checkout</h1>
+
+    <div class="notice">
+      <strong>This checkout is fake.</strong> No order is placed, no card is charged,
+      and nothing is transmitted or saved. The fields below are pre-filled with
+      standard dummy test values — please leave them as they are rather than
+      entering real details.
+    </div>
+
+    <div id="body"></div>
+  </main>
+
+  <div id="site-footer"></div>
+
+  <script src="assets/data.js"></script>
+  <script src="assets/store.js"></script>
+  <script>
+    renderHeader();
+    renderFooter();
+
+    const { lines, subtotal, shipping, tax, total } = cartTotals();
+    const body = document.getElementById("body");
+
+    if (lines.length === 0) {
+      body.innerHTML = `<div class="empty">
+          <p>Your cart is empty — there is nothing to check out.</p>
+          <p><a class="btn" href="index.html">Start shopping</a></p>
+        </div>`;
+    } else {
+      body.innerHTML = `
+        <form id="checkout-form" novalidate autocomplete="off">
+          <fieldset>
+            <legend>Shipping address</legend>
+            <div class="form-grid">
+              <div class="field">
+                <label for="fullname">Full name</label>
+                <input id="fullname" name="fullname" type="text" value="Test Shopper" autocomplete="off" required>
+              </div>
+              <div class="field">
+                <label for="email">Email address</label>
+                <input id="email" name="email" type="email" value="test@example.com" autocomplete="off" required>
+              </div>
+              <div class="field full">
+                <label for="address">Street address</label>
+                <input id="address" name="address" type="text" value="123 Demo Street" autocomplete="off" required>
+              </div>
+              <div class="field">
+                <label for="city">City</label>
+                <input id="city" name="city" type="text" value="Springfield" autocomplete="off" required>
+              </div>
+              <div class="field">
+                <label for="state">State</label>
+                <select id="state" name="state">
+                  <option>CA</option><option selected>IL</option><option>NY</option>
+                  <option>TX</option><option>WA</option>
+                </select>
+              </div>
+              <div class="field">
+                <label for="zip">ZIP code</label>
+                <input id="zip" name="zip" type="text" value="62704" autocomplete="off" required>
+              </div>
+              <div class="field">
+                <label for="phone">Phone</label>
+                <input id="phone" name="phone" type="tel" value="555-0100" autocomplete="off">
+              </div>
+            </div>
+          </fieldset>
+
+          <fieldset>
+            <legend>Payment (demo only — not processed)</legend>
+            <p class="rating" style="margin-top:0">
+              Pre-filled with the industry-standard dummy test card. This is not a real
+              card number and nothing is charged or sent anywhere.
+            </p>
+            <div class="form-grid">
+              <div class="field full">
+                <label for="card">Card number</label>
+                <input id="card" name="card" type="text" inputmode="numeric"
+                       value="4111 1111 1111 1111" autocomplete="off">
+              </div>
+              <div class="field">
+                <label for="exp">Expiration (MM/YY)</label>
+                <input id="exp" name="exp" type="text" value="12/34" autocomplete="off">
+              </div>
+              <div class="field">
+                <label for="cvc">Security code</label>
+                <input id="cvc" name="cvc" type="text" value="123" autocomplete="off">
+              </div>
+            </div>
+          </fieldset>
+
+          <fieldset>
+            <legend>Order summary</legend>
+            <table>
+              <caption class="sr-only">Items being ordered</caption>
+              <thead>
+                <tr><th scope="col">Item</th><th scope="col">Qty</th><th scope="col" class="num">Total</th></tr>
+              </thead>
+              <tbody>
+                ${lines.map((l) => `
+                  <tr>
+                    <td>${l.product.name}</td>
+                    <td>${l.qty}</td>
+                    <td class="num">${money(l.lineTotal)}</td>
+                  </tr>`).join("")}
+              </tbody>
+            </table>
+            <div class="totals">
+              <div><span>Subtotal</span><span>${money(subtotal)}</span></div>
+              <div><span>Shipping</span><span>${shipping === 0 ? "FREE" : money(shipping)}</span></div>
+              <div><span>Estimated tax</span><span>${money(tax)}</span></div>
+              <div class="grand"><span>Order total</span><span>${money(total)}</span></div>
+            </div>
+          </fieldset>
+
+          <p class="status" id="status" role="status" aria-live="polite"></p>
+          <p>
+            <button class="btn" type="submit" id="place-order"
+                    aria-label="Place order — demo only, nothing is charged">Place Order</button>
+            <a href="cart.html" style="margin-left:14px">Back to cart</a>
+          </p>
+        </form>`;
+
+      document.getElementById("checkout-form").addEventListener("submit", (e) => {
+        // Nothing is submitted anywhere — we stop the event and fake a result.
+        e.preventDefault();
+
+        const required = ["fullname", "email", "address", "city", "zip"];
+        const missing = required.filter((id) => !document.getElementById(id).value.trim());
+        if (missing.length) {
+          const s = document.getElementById("status");
+          s.textContent = "Please fill in: " + missing.join(", ");
+          s.className = "status warn";
+          return;
+        }
+
+        const orderNo = "MM-" + Math.floor(100000 + Math.random() * 900000);
+        localStorage.setItem(ORDER_KEY, JSON.stringify({
+          orderNo,
+          total: total.toFixed(2),
+          items: lines.map((l) => ({ name: l.product.name, qty: l.qty })),
+          name: document.getElementById("fullname").value,
+        }));
+        clearCart();
+        location.href = "confirmation.html";
+      });
+    }
+  </script>
+</body>
+</html>

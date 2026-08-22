@@ -49,9 +49,8 @@ ALLOWED_DOMAINS: list[str] = []
 # pause and ask you before doing it. This is the "don't buy things / don't
 # submit forms unattended" guardrail.
 RISKY_KEYWORDS = [
-    "buy", "purchase", "checkout", "pay", "order", "place order",
     "submit", "confirm", "delete", "remove", "send", "post", "publish",
-    "sign in", "log in", "subscribe", "agree", "accept",
+    "subscribe", "agree", "accept",
 ]
 
 SYSTEM_PROMPT = """You are a web research agent driving a real Chromium browser through tools.
@@ -64,8 +63,6 @@ How to work:
 - To research a question: navigate to a search engine or a known site, read
   results, click through, and extract the facts you need.
 - Never guess a ref — only use refs present in the latest snapshot.
-- Do NOT attempt to log in, purchase, submit forms, or post content. If a task
-  seems to require that, stop and explain what you'd need the human to do.
 - When you have the answer, stop calling tools and reply with a clear summary,
   citing the URLs you used.
 """

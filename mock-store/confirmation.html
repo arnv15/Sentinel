@@ -1,0 +1,48 @@
+<!doctype html>
+<!-- MockMart — STATIC DEMO. Fake order confirmation. No order exists. -->
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex, nofollow">
+  <title>Order Confirmed — MockMart</title>
+  <link rel="stylesheet" href="assets/styles.css">
+</head>
+<body>
+  <div id="site-header"></div>
+
+  <main class="wrap" id="main">
+    <div class="confirm-box" id="box"></div>
+  </main>
+
+  <div id="site-footer"></div>
+
+  <script src="assets/data.js"></script>
+  <script src="assets/store.js"></script>
+  <script>
+    renderHeader();
+    renderFooter();
+
+    let order = null;
+    try { order = JSON.parse(localStorage.getItem(ORDER_KEY)); } catch { /* ignore */ }
+
+    const box = document.getElementById("box");
+    if (!order) {
+      box.innerHTML = `<h1>No recent order</h1>
+        <p>There is no demo order to show. Add something to the cart and check out.</p>
+        <p><a class="btn" href="index.html">Start shopping</a></p>`;
+    } else {
+      box.innerHTML = `
+        <h1>Order confirmed</h1>
+        <p>Thanks, ${order.name}. This is a <strong>simulated</strong> confirmation —
+           no order was placed and no payment was taken.</p>
+        <p class="order-no">Order ${order.orderNo}</p>
+        <p><strong>Order total:</strong> $${order.total}</p>
+        <ul style="list-style:none;padding:0;text-align:left;max-width:340px;margin:20px auto">
+          ${order.items.map((i) => `<li>${i.qty} × ${i.name}</li>`).join("")}
+        </ul>
+        <p><a class="btn" href="index.html">Continue shopping</a></p>`;
+    }
+  </script>
+</body>
+</html>

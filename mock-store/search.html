@@ -1,0 +1,56 @@
+<!doctype html>
+<!-- MockMart — STATIC DEMO. Client-side search over the in-page catalog. -->
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex, nofollow">
+  <title>Search — MockMart</title>
+  <link rel="stylesheet" href="assets/styles.css">
+</head>
+<body>
+  <div id="site-header"></div>
+
+  <main class="wrap" id="main">
+    <p class="crumbs"><a href="index.html">Home</a> &rsaquo; Search</p>
+    <h1 id="head">Search results</h1>
+    <p class="lede" id="sub"></p>
+    <p class="status" id="status" role="status" aria-live="polite"></p>
+    <ul class="grid" id="grid"></ul>
+    <div id="none"></div>
+  </main>
+
+  <div id="site-footer"></div>
+
+  <script src="assets/data.js"></script>
+  <script src="assets/store.js"></script>
+  <script>
+    renderHeader();
+    renderFooter();
+
+    const term = (qs("q") || "").trim();
+    const needle = term.toLowerCase();
+    const hits = needle
+      ? PRODUCTS.filter((p) =>
+          p.name.toLowerCase().includes(needle) ||
+          p.desc.toLowerCase().includes(needle) ||
+          p.sku.includes(needle))
+      : [];
+
+    document.title = term ? `"${term}" — MockMart` : "Search — MockMart";
+    document.getElementById("head").textContent = term ? `Results for "${term}"` : "Search";
+    document.getElementById("sub").textContent = term
+      ? `${hits.length} product${hits.length === 1 ? "" : "s"} found.`
+      : "Enter a search term in the box above.";
+    document.getElementById("grid").innerHTML = hits.map(productCard).join("");
+
+    if (term && hits.length === 0) {
+      document.getElementById("none").innerHTML =
+        `<div class="empty"><p>No products matched "<strong>${term}</strong>".</p>
+         <p><a class="btn" href="index.html">Browse all departments</a></p></div>`;
+    }
+
+    wireAddButtons();
+  </script>
+</body>
+</html>

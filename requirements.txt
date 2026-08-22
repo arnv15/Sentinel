@@ -1,8 +1,24 @@
-# Sentinel — Discord monitor -> Telegram alerts
+# Sentinel — all dependencies for both phases, one virtualenv at the repo root:
 #
+#     python3 -m venv .venv && source .venv/bin/activate
+#     pip install -r requirements.txt
+
+# ----- Phase 1: scraper (Discord -> Telegram) -----
 # discord.py-self is a fork of discord.py for automating user accounts (self-bots).
-# Install it INSTEAD of discord.py — they share the `discord` import name and conflict.
+# Install it INSTEAD of discord.py — they share the `discord` import name and
+# conflict. If plain discord.py is already installed, pip uninstall it first.
 discord.py-self>=2.0
 aiohttp>=3.9
-# Loads secrets (tokens, chat IDs) from a local .env file so they stay out of source.
+
+# ----- Phase 2: browser research agent -----
+# anthropic — Messages API client (runs the tool-use loop). Pinned to 1.x: the
+#             0.x→1.x jump dropped temperature/top_p/top_k and moved to httpx2.
+#             browser_agent.py uses none of the removed surface, verified on 1.0.0.
+# mcp       — Model Context Protocol client (spawns & talks to Playwright MCP)
+# Also needs Node 18+ at runtime for `npx @playwright/mcp`.
+anthropic>=1,<2
+mcp>=1.2
+
+# ----- Shared -----
+# Loads secrets from the local .env so they stay out of source.
 python-dotenv>=1.0

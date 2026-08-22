@@ -1,0 +1,42 @@
+<!doctype html>
+<!-- MockMart — STATIC DEMO. Category listing, 10 products per department. -->
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex, nofollow">
+  <title>Category — MockMart</title>
+  <link rel="stylesheet" href="assets/styles.css">
+</head>
+<body>
+  <div id="site-header"></div>
+
+  <main class="wrap" id="main">
+    <p class="crumbs"><a href="index.html">Home</a> &rsaquo; <span id="crumb-cat"></span></p>
+    <h1 id="cat-title">Category</h1>
+    <p class="lede" id="cat-blurb"></p>
+    <p class="status" id="status" role="status" aria-live="polite"></p>
+    <ul class="grid" id="grid"></ul>
+  </main>
+
+  <div id="site-footer"></div>
+
+  <script src="assets/data.js"></script>
+  <script src="assets/store.js"></script>
+  <script>
+    const cat = catById(qs("cat")) || CATEGORIES[0];
+    renderHeader(cat.id);
+    renderFooter();
+
+    document.title = `${cat.name} — MockMart`;
+    document.getElementById("crumb-cat").textContent = cat.name;
+    document.getElementById("cat-title").textContent = cat.name;
+
+    const items = PRODUCTS.filter((p) => p.cat === cat.id);
+    document.getElementById("cat-blurb").textContent = `${cat.blurb} — ${items.length} items.`;
+    document.getElementById("grid").innerHTML = items.map(productCard).join("");
+
+    wireAddButtons();
+  </script>
+</body>
+</html>

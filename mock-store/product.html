@@ -1,0 +1,90 @@
+<!doctype html>
+<!-- MockMart — STATIC DEMO. Product detail page, driven by ?id=<product id>. -->
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex, nofollow">
+  <title>Product — MockMart</title>
+  <link rel="stylesheet" href="assets/styles.css">
+</head>
+<body>
+  <div id="site-header"></div>
+  <main class="wrap" id="main"></main>
+  <div id="site-footer"></div>
+
+  <script src="assets/data.js"></script>
+  <script src="assets/store.js"></script>
+  <script>
+    const p = byId(qs("id"));
+    renderHeader(p ? p.cat : "");
+    renderFooter();
+    const main = document.getElementById("main");
+
+    if (!p) {
+      main.innerHTML = `<div class="empty"><h1>Product not found</h1>
+        <p>No product matches that id.</p>
+        <p><a class="btn" href="index.html">Back to home</a></p></div>`;
+    } else {
+      document.title = `${p.name} — MockMart`;
+      const cat = catById(p.cat);
+      const out = p.stock === 0;
+      const ceiling = Math.min(p.limit, p.stock);
+
+      main.innerHTML = `
+        <p class="crumbs">
+          <a href="index.html">Home</a> &rsaquo;
+          <a href="category.html?cat=${cat.id}">${cat.name}</a> &rsaquo; ${p.name}
+        </p>
+        <div class="pdp">
+          <div class="pdp-img">
+            <img src="${placeholder(p, 640)}" alt="${p.name}" width="640" height="640">
+          </div>
+          <div>
+            <h1>${p.name}</h1>
+            <p class="rating" aria-label="Rated ${p.rating} out of 5 from ${p.reviews} reviews">
+              <span aria-hidden="true">${stars(p.rating)}</span> ${p.rating} — ${p.reviews} reviews
+            </p>
+            <p class="price">${money(p.price)}</p>
+            <p class="stock ${out ? "oos" : p.stock <= 5 ? "low" : "in"}">
+              ${out ? "Out of stock" : `In stock — ${p.stock} available`}
+            </p>
+            <p>${p.desc}</p>
+            <ul class="meta">
+              <li><strong>SKU:</strong> ${p.sku}</li>
+              <li><strong>Department:</strong> ${cat.name}</li>
+              <li><strong>Purchase limit:</strong> ${p.limit} per order</li>
+              <li><strong>Shipping:</strong> Free over ${money(FREE_SHIP_OVER)}, otherwise ${money(SHIP_FLAT)}</li>
+            </ul>
+
+            <div class="qty-row">
+              <label for="qty">Quantity</label>
+              <input type="number" id="qty" name="qty" value="1" min="1"
+                     max="${Math.max(ceiling, 1)}" ${out ? "disabled" : ""}>
+              <span class="rating">${out ? "" : `max ${ceiling}`}</span>
+            </div>
+
+            <button class="btn" id="add-btn" ${out ? "disabled" : ""}
+                    aria-label="Add ${p.name} to cart">
+              ${out ? "Out of Stock" : "Add to Cart"}
+            </button>
+            <p class="status" id="status" role="status" aria-live="polite"></p>
+            <p><a href="cart.html">Go to cart</a> &middot;
+               <a href="category.html?cat=${cat.id}">Back to ${cat.name}</a></p>
+          </div>
+        </div>`;
+
+      const btn = document.getElementById("add-btn");
+      if (btn && !out) {
+        btn.addEventListener("click", () => {
+          const qty = parseInt(document.getElementById("qty").value, 10) || 1;
+          const res = addToCart(p.id, qty);
+          const s = document.getElementById("status");
+          s.textContent = res.message;
+          s.className = "status " + (res.ok ? "ok" : "warn");
+        });
+      }
+    }
+  </script>
+</body>
+</html>

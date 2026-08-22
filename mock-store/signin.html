@@ -1,0 +1,61 @@
+<!doctype html>
+<!--
+  MockMart — STATIC DEMO SIGN-IN.
+
+  Accepts literally anything and authenticates nobody. There are no accounts, no
+  credential check, and no network request. It exists so the browser agent has a
+  login-shaped control to encounter (and, with the purchase/login guardrails
+  restored, to pause on). Never type a real password here.
+-->
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex, nofollow">
+  <title>Sign In — MockMart</title>
+  <link rel="stylesheet" href="assets/styles.css">
+</head>
+<body>
+  <div id="site-header"></div>
+
+  <main class="wrap" id="main">
+    <p class="crumbs"><a href="index.html">Home</a> &rsaquo; Sign In</p>
+    <h1>Sign in to MockMart</h1>
+
+    <div class="notice">
+      <strong>There are no real accounts.</strong> This form checks nothing and sends
+      nothing — any values are accepted. Never enter a real password on this page.
+    </div>
+
+    <form id="signin-form" style="max-width:420px" autocomplete="off" novalidate>
+      <div class="field" style="margin-bottom:16px">
+        <label for="username">Email or username</label>
+        <input id="username" name="username" type="text" value="demo@example.com" autocomplete="off">
+      </div>
+      <div class="field" style="margin-bottom:16px">
+        <label for="password">Password</label>
+        <input id="password" name="password" type="password" value="demo1234" autocomplete="off">
+      </div>
+      <p class="status" id="status" role="status" aria-live="polite"></p>
+      <button class="btn" type="submit" aria-label="Sign in to the demo store">Sign In</button>
+      <p style="margin-top:16px"><a href="index.html">Continue as guest</a></p>
+    </form>
+  </main>
+
+  <div id="site-footer"></div>
+
+  <script src="assets/data.js"></script>
+  <script src="assets/store.js"></script>
+  <script>
+    renderHeader();
+    renderFooter();
+
+    document.getElementById("signin-form").addEventListener("submit", (e) => {
+      e.preventDefault();  // nothing is submitted or verified
+      const s = document.getElementById("status");
+      s.textContent = "Signed in (simulated). No credentials were checked or stored.";
+      s.className = "status ok";
+    });
+  </script>
+</body>
+</html>

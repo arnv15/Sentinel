@@ -1,0 +1,51 @@
+<!doctype html>
+<!--
+  MockMart — a STATIC DEMO storefront. Not a real shop. No backend, no orders,
+  no payment processing. Built as a test fixture for an automated browser agent.
+-->
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex, nofollow">
+  <title>MockMart — Demo Storefront</title>
+  <link rel="stylesheet" href="assets/styles.css">
+</head>
+<body>
+  <div id="site-header"></div>
+
+  <main class="wrap" id="main">
+    <h1>Everything, all in one demo store</h1>
+    <p class="lede">Browse four departments. Nothing here is real — this storefront exists
+      to test an automated shopping agent end to end.</p>
+
+    <h2>Shop by department</h2>
+    <ul class="tiles" id="tiles"></ul>
+
+    <h2>Trending in Trading Cards</h2>
+    <p class="status" id="status" role="status" aria-live="polite"></p>
+    <ul class="grid" id="featured"></ul>
+  </main>
+
+  <div id="site-footer"></div>
+
+  <script src="assets/data.js"></script>
+  <script src="assets/store.js"></script>
+  <script>
+    renderHeader();
+    renderFooter();
+
+    document.getElementById("tiles").innerHTML = CATEGORIES.map((c) => `
+      <li class="tile">
+        <h2>${c.name}</h2>
+        <p>${c.blurb}</p>
+        <a class="btn secondary" href="category.html?cat=${c.id}">Shop ${c.name}</a>
+      </li>`).join("");
+
+    document.getElementById("featured").innerHTML =
+      PRODUCTS.filter((p) => p.cat === "trading-cards").slice(0, 5).map(productCard).join("");
+
+    wireAddButtons();
+  </script>
+</body>
+</html>
