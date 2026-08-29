@@ -46,6 +46,10 @@ from dotenv import load_dotenv
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
+# Load .env BEFORE the module-level config below reads os.environ — otherwise
+# LLM_PROVIDER / HEADLESS set in .env are silently ignored and the defaults win.
+load_dotenv()
+
 # ---------------------------------------------------------------------------
 # Config — tweak these
 # ---------------------------------------------------------------------------
@@ -94,6 +98,10 @@ PROVIDER = os.environ.get("LLM_PROVIDER", "gemini").strip().lower()
 
 MAX_STEPS = 40          # hard cap on tool calls — stops runaway loops
 MAX_TOKENS = 4096       # per model response
+
+# Show the browser window (default) or run invisibly. Set HEADLESS=1 in .env for
+# servers / unattended runs. Playwright MCP is headed by default.
+HEADLESS = os.environ.get("HEADLESS", "").strip().lower() in ("1", "true", "yes")
 
 # Domain allowlist. Empty list = allow any site. Add hostnames to restrict, e.g.
 #   ALLOWED_DOMAINS = ["wikipedia.org", "arxiv.org", "localhost"]
@@ -416,14 +424,16 @@ def mcp_result_to_parts(result) -> tuple[str, list, bool]:
 # ---------------------------------------------------------------------------
 
 async def run_agent(goal: str) -> None:
-    load_dotenv()
-    adapter = build_adapter()
+    adapter = build_adapter()   # .env already loaded at import time
 
-    # Launch Playwright MCP as a subprocess. `--headed` shows the browser window.
-    server = StdioServerParameters(
-        command="npx",
-        args=["-y", "@playwright/mcp@latest", "--headed"],
-    )
+    # Launch Playwright MCP as a subprocess.
+    # Current @playwright/mcp is HEADED BY DEFAULT and only accepts `--headless`;
+    # the old `--headed` flag was removed and passing it kills the subprocess
+    # with "unknown option" (surfacing here as MCPError: Connection closed).
+    args = ["-y", "@playwright/mcp@latest"]
+    if HEADLESS:
+        args.append("--headless")
+    server = StdioServerParameters(command="npx", args=args)
 
     async with stdio_client(server) as (read, write):
         async with ClientSession(read, write) as session:

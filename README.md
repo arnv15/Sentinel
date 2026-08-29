@@ -217,8 +217,9 @@ so you can watch it work.
 - **Model** — set `LLM_PROVIDER` and optionally `LLM_MODEL` in `.env`; defaults
   per provider live in the `PROVIDERS` table at the top of `browser_agent.py`.
   `LLM_BASE_URL` points at any other OpenAI-compatible endpoint.
-- **Headless** — remove `"--headed"` from the `args` list in `run_agent()` to run
-  with no visible window (for servers / unattended use).
+- **Headless** — set `HEADLESS=1` in `.env`. The window shows by default.
+  (Current `@playwright/mcp` is headed by default and only accepts `--headless`;
+  passing the old `--headed` flag kills the subprocess.)
 - **More tools** — Playwright MCP has flags for tabs, file uploads, PDF, etc.
   See its docs; any tool it exposes is automatically offered to Claude.
 

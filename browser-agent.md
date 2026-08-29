@@ -58,7 +58,7 @@ cheaper and more reliable than vision-based clicking.
 | Overall approach    | Playwright MCP + own agent loop (vs. `browser-use` library) | Full control over the loop, prompting, guardrails, model choice. `browser-use` bundles its own loop/prompt and is harder to customize. Same architecture Claude Code itself uses. |
 | Agent loop          | **Raw tool-use loop** (vs. an agent framework)              | User explicitly chose maximum control / to see the mechanics, accepting more boilerplate.                                                                                        |
 | Provider            | **Provider-agnostic via OpenAI Chat Completions**           | Free tiers churn; adapting once to the OpenAI format makes Gemini/Groq/Cerebras/OpenRouter/GitHub/Ollama a `.env` switch. Anthropic keeps a native adapter.                       |
-| Browser mode        | **Headed** (visible window)                                 | User wants to watch it work; best for learning/debugging. Toggle to headless by removing `"--headed"` from args in `run_agent()`.                                                 |
+| Browser mode        | **Headed** (visible window), `HEADLESS=1` to disable         | User wants to watch it work. Current `@playwright/mcp` is headed by default and REMOVED `--headed`; passing it kills the subprocess with "unknown option", surfacing as `MCPError: Connection closed`. Only `--headless` is accepted. |
 | Page representation | Accessibility tree (Playwright MCP default)                 | Faster/cheaper/more reliable than screenshots.                                                                                                                                    |
 | Model default       | `gemini-3.7-flash` (free tier)                              | Free, 1M context, and 1M TPM — which matters because this loop re-sends a growing history of a11y trees every step. `PROVIDERS` table at the top of the module.                   |
 | Repo layout         | Flat `src/`, one venv, one `.env` (was two sub-projects)    | The two phases are meant to connect; both scripts sitting in `src/` makes `from browser_agent import run_agent` trivial and removes duplicate config.                             |
@@ -95,8 +95,8 @@ cheaper and more reliable than vision-based clicking.
 
 ### Pending ⏳
 
-1. **No API key set** — no `.env` yet. BLOCKS any live run. `cp .env.example .env`
-   and paste a free Gemini key from https://aistudio.google.com/apikey.
+1. **Gemini API key** — `.env` exists; paste a free key from
+   https://aistudio.google.com/apikey into `GEMINI_API_KEY`. BLOCKS any live run.
 2. **No live run against a real model yet** — the loop has been verified against a
    scripted mock LLM (see below), but never against Gemini itself. Expect to shake
    out provider quirks on the first real run.
@@ -165,7 +165,6 @@ A Chromium window opens so you can watch. With no CLI arg it prompts for a task.
    (persistent context) so cookies/logins survive across runs, letting the agent
    research behind sites you've logged into once. Default is a fresh throwaway
    profile each run.
-2. **Headless toggle** — expose `--headed`/headless as a CLI flag or env var.
 3. **Save output to a report file** (e.g. Markdown) instead of just stdout.
 4. **Wire Phase 1 → Phase 2** — have `scraper.py` call `run_agent()` on a restock
    hit. Both scripts live in `src/`, so it's a plain import.
