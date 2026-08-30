@@ -93,13 +93,31 @@ cheaper and more reliable than vision-based clicking.
   `system → user → assistant(tool_calls) → tool` threading, real accessibility
   trees (6 KB) flowing back, clean termination.
 
+### Gemini gotcha: thought signatures 🔑
+
+Gemini 3 thinking models attach an opaque `thought_signature` to **every**
+function call and require it echoed back verbatim on the next turn. Miss it and
+the second request dies with:
+
+> `Function call is missing a thought_signature in functionCall parts.`
+
+The OpenAI compatibility layer has no field for this, so it rides along as
+`tool_calls[i].extra_content.google.thought_signature` — and because the OpenAI
+SDK doesn't declare that field, pydantic parks it in `model_extra`. `_extra_content()`
+digs it out and `_tool_call_entry()` puts it back. This bites every OpenAI-compatible
+client (Codex, VS Code, open-webui all have open issues on it); it is not
+specific to this project.
+
+Verified with a mock that rejects requests exactly like Gemini does, plus a
+negative control confirming the old code reproduces the 400.
+
 ### Pending ⏳
 
 1. **Gemini API key** — `.env` exists; paste a free key from
    https://aistudio.google.com/apikey into `GEMINI_API_KEY`. BLOCKS any live run.
-2. **No live run against a real model yet** — the loop has been verified against a
-   scripted mock LLM (see below), but never against Gemini itself. Expect to shake
-   out provider quirks on the first real run.
+2. **No full live run completed yet** — Gemini connects, authenticates, and makes
+   correct tool calls; the thought-signature blocker is fixed but a complete
+   browse→cart run against the live fixture hasn't been confirmed end to end.
 
 ### Known intentional deviation ⚠️
 

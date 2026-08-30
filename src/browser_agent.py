@@ -220,6 +220,36 @@ def sanitize_schema(node):
 
 
 # ---------------------------------------------------------------------------
+# Gemini thought signatures
+# ---------------------------------------------------------------------------
+
+def _plain(value):
+    """Normalise pydantic models / nested objects to plain JSON-able data."""
+    if hasattr(value, "model_dump"):
+        return value.model_dump(exclude_none=True)
+    if isinstance(value, dict):
+        return {k: _plain(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_plain(v) for v in value]
+    return value
+
+
+def _extra_content(tool_call):
+    """
+    Pull Gemini's per-tool-call `extra_content` (which carries
+    `{"google": {"thought_signature": "..."}}`) off an OpenAI-SDK tool call.
+
+    The OpenAI SDK has no declared field for it, so pydantic parks it in
+    `model_extra`. Returns None for providers that don't send it.
+    """
+    ec = getattr(tool_call, "extra_content", None)
+    if ec is None:
+        extra = getattr(tool_call, "model_extra", None) or {}
+        ec = extra.get("extra_content")
+    return _plain(ec) if ec else None
+
+
+# ---------------------------------------------------------------------------
 # Provider adapters
 #
 # Each adapter normalises one provider to the same three operations the loop
@@ -281,22 +311,36 @@ class OpenAIAdapter:
                 args = json.loads(tc.function.arguments or "{}")
             except json.JSONDecodeError:
                 args = {}
-            calls.append({"id": tc.id, "name": tc.function.name, "input": args})
+            calls.append({
+                "id": tc.id,
+                "name": tc.function.name,
+                "input": args,
+                "extra_content": _extra_content(tc),   # Gemini thought signature
+            })
         self._last = msg
         return (msg.content or ""), calls, bool(calls)
 
     def record_assistant(self, messages, _text, calls):
         entry = {"role": "assistant", "content": self._last.content or ""}
         if calls:
-            entry["tool_calls"] = [
-                {
-                    "id": c["id"],
-                    "type": "function",
-                    "function": {"name": c["name"], "arguments": json.dumps(c["input"])},
-                }
-                for c in calls
-            ]
+            entry["tool_calls"] = [self._tool_call_entry(c) for c in calls]
         messages.append(entry)
+
+    def _tool_call_entry(self, c):
+        entry = {
+            "id": c["id"],
+            "type": "function",
+            "function": {"name": c["name"], "arguments": json.dumps(c["input"])},
+        }
+        # Gemini 3 thinking models attach an opaque `thought_signature` to every
+        # function call and REQUIRE it echoed back on the next turn, or the
+        # request 400s with "Function call is missing a thought_signature".
+        # It rides on the tool call as extra_content.google.thought_signature.
+        # Harmless to other providers: OpenAI-compatible servers ignore unknown
+        # fields, and we only attach it when the model actually sent one.
+        if c.get("extra_content"):
+            entry["extra_content"] = c["extra_content"]
+        return entry
 
     def record_results(self, messages, results):
         # OpenAI-style tool results are one message per call, content is a
