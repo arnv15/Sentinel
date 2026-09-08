@@ -103,6 +103,33 @@ MAX_TOKENS = 4096       # per model response
 # servers / unattended runs. Playwright MCP is headed by default.
 HEADLESS = os.environ.get("HEADLESS", "").strip().lower() in ("1", "true", "yes")
 
+
+def _flag(name: str, default: bool) -> bool:
+    raw = os.environ.get(name, "").strip().lower()
+    if raw in ("1", "true", "yes"):
+        return True
+    if raw in ("0", "false", "no"):
+        return False
+    return default
+
+
+# When the loop finishes, run_agent() exits the stdio_client context, which kills
+# the MCP subprocess and takes Chromium down with it — so the window vanishes
+# before you can look at the result. KEEP_OPEN waits for Enter first.
+# Defaults on when headed, off when headless (nothing to look at, and a server
+# run must never block on stdin).
+KEEP_OPEN = _flag("KEEP_OPEN", not HEADLESS)
+
+# Seconds to pause after each tool call, so you can actually watch it work.
+try:
+    STEP_DELAY = float(os.environ.get("STEP_DELAY", "0") or 0)
+except ValueError:
+    STEP_DELAY = 0.0
+
+# Write a Markdown transcript of each run to runs/. Answers "did it actually do
+# what I asked" after the window is gone.
+TRANSCRIPT = _flag("TRANSCRIPT", True)
+
 # Domain allowlist. Empty list = allow any site. Add hostnames to restrict, e.g.
 #   ALLOWED_DOMAINS = ["wikipedia.org", "arxiv.org", "localhost"]
 # A navigate to anything not on the list will pause for your confirmation.
@@ -464,6 +491,50 @@ def mcp_result_to_parts(result) -> tuple[str, list, bool]:
 
 
 # ---------------------------------------------------------------------------
+# Watching the run
+# ---------------------------------------------------------------------------
+
+async def hold_browser_open() -> None:
+    """
+    Block until the human presses Enter, keeping Chromium alive.
+
+    Must be called INSIDE the stdio_client context — once that exits, the MCP
+    subprocess dies and the window closes. Runs input() on a worker thread so
+    the event loop (and the MCP connection) stays responsive.
+    """
+    print("\n🔎 Browser left open so you can inspect the result.")
+    try:
+        await asyncio.to_thread(input, "   Press Enter to close it… ")
+    except (EOFError, KeyboardInterrupt):
+        pass  # no TTY, or the user hit Ctrl-C — just tear down
+
+
+def write_transcript(goal: str, lines: list[str]) -> str | None:
+    """Save a Markdown record of the run to runs/. Returns the path, or None."""
+    if not TRANSCRIPT:
+        return None
+    from datetime import datetime
+
+    runs = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "runs")
+    os.makedirs(runs, exist_ok=True)
+    stamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    path = os.path.join(runs, f"run-{stamp}.md")
+    header = [
+        f"# Agent run — {stamp}",
+        "",
+        f"- **Goal:** {goal}",
+        f"- **Provider:** {PROVIDER}",
+        f"- **Headless:** {HEADLESS}",
+        "",
+        "## Steps",
+        "",
+    ]
+    with open(path, "w") as f:
+        f.write("\n".join(header + lines) + "\n")
+    return path
+
+
+# ---------------------------------------------------------------------------
 # The agent loop
 # ---------------------------------------------------------------------------
 
@@ -488,6 +559,7 @@ async def run_agent(goal: str) -> None:
             print(f"Goal: {goal}\n")
 
             messages = adapter.seed(goal)
+            log: list[str] = []
 
             for step in range(1, MAX_STEPS + 1):
                 text, calls, wants_tools = adapter.complete(messages, tools)
@@ -495,19 +567,23 @@ async def run_agent(goal: str) -> None:
 
                 if text.strip():
                     print(f"\n🤖 {text.strip()}\n")
+                    log.append(f"**Model:** {text.strip()}\n")
 
                 if not wants_tools:
                     print("✅ Done.")
-                    return
+                    log.append("\n## Result\n\n✅ Finished normally.")
+                    break   # NOT return — the browser must stay up for KEEP_OPEN
 
                 results = []
                 for call in calls:
                     print(f"[{step}] → {call['name']}({_short(call['input'])})")
+                    log.append(f"- `[{step}]` **{call['name']}**(`{_short(call['input'], 200)}`)")
 
                     allowed, reason = guardrail_check(call["name"], call["input"])
                     if not allowed:
                         results.append({"id": call["id"], "text": f"BLOCKED: {reason}",
                                         "images": [], "is_error": True})
+                        log.append(f"  - ⛔ blocked: {reason}")
                         continue
 
                     try:
@@ -515,13 +591,29 @@ async def run_agent(goal: str) -> None:
                         body, images, errored = mcp_result_to_parts(raw)
                         results.append({"id": call["id"], "text": body, "images": images,
                                         "is_error": errored})
+                        head = " ".join(body.split())[:160]
+                        log.append(f"  - {'⚠️ error' if errored else '✓'} {head}")
                     except Exception as e:  # keep the loop alive on a single failure
                         results.append({"id": call["id"], "text": f"ERROR: {e}",
                                         "images": [], "is_error": True})
+                        log.append(f"  - ⚠️ exception: {e}")
+
+                    if STEP_DELAY:
+                        await asyncio.sleep(STEP_DELAY)
 
                 adapter.record_results(messages, results)
+            else:
+                # Loop ran to MAX_STEPS without the model ever finishing.
+                print(f"⛔ Hit MAX_STEPS ({MAX_STEPS}) without finishing.")
+                log.append(f"\n## Result\n\n⛔ Hit MAX_STEPS ({MAX_STEPS}) without finishing.")
 
-            print(f"⛔ Hit MAX_STEPS ({MAX_STEPS}) without finishing.")
+            # Still inside the MCP session, so Chromium is still alive.
+            if KEEP_OPEN:
+                await hold_browser_open()
+
+    path = write_transcript(goal, log)
+    if path:
+        print(f"📝 Transcript: {path}")
 
 
 def _short(d: dict, n: int = 80) -> str:

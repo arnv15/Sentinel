@@ -220,6 +220,11 @@ so you can watch it work.
 - **Headless** — set `HEADLESS=1` in `.env`. The window shows by default.
   (Current `@playwright/mcp` is headed by default and only accepts `--headless`;
   passing the old `--headed` flag kills the subprocess.)
+- **Watching it work** — the browser is a child of the MCP subprocess, so it
+  closes the moment the run ends. `KEEP_OPEN` (on by default when headed) holds
+  it open until you press Enter; `STEP_DELAY=1` pauses a second after each tool
+  call so you can follow along; every run also writes a Markdown transcript to
+  `runs/` (git-ignored) so you can check what happened after the window is gone.
 - **More tools** — Playwright MCP has flags for tabs, file uploads, PDF, etc.
   See its docs; any tool it exposes is automatically offered to Claude.
 

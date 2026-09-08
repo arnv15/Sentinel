@@ -11,3 +11,6 @@ __pycache__/
 
 # Playwright MCP run artifacts (a11y dumps, console logs)
 .playwright-mcp/
+
+# Agent run transcripts
+runs/
