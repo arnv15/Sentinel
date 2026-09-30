@@ -41,6 +41,7 @@ import asyncio
 import json
 import os
 import sys
+from dataclasses import dataclass, field
 
 from dotenv import load_dotenv
 from mcp import ClientSession, StdioServerParameters
@@ -130,18 +131,26 @@ except ValueError:
 # what I asked" after the window is gone.
 TRANSCRIPT = _flag("TRANSCRIPT", True)
 
-# Domain allowlist. Empty list = allow any site. Add hostnames to restrict, e.g.
+# ---- Confirmation guardrails: OFF by design ----
+#
+# Both lists are empty, so guardrail_check() never pauses and the agent runs
+# uninterrupted. This is the user's deliberate choice: they supervise every run
+# and do not want y/N prompts breaking the flow.
+#
+# The MECHANISM is intact — put entries back in either list (or pass
+# allowed_domains= / risky_keywords= to run_agent) and confirmation returns
+# immediately, no other code changes needed.
+#
+# Domain allowlist. Empty = allow any site. To restrict:
 #   ALLOWED_DOMAINS = ["wikipedia.org", "arxiv.org", "localhost"]
-# A navigate to anything not on the list will pause for your confirmation.
+# A navigate off the list prompts for confirmation.
 ALLOWED_DOMAINS: list[str] = []
 
-# If a click/type targets an element whose label contains one of these words,
-# pause and ask you before doing it. This is the "don't buy things / don't
-# submit forms unattended" guardrail.
-RISKY_KEYWORDS = [
-    "submit", "confirm", "delete", "remove", "send", "post", "publish",
-    "subscribe", "agree", "accept",
-]
+# Click/type targets whose label contains one of these words prompt first. To
+# re-arm the "don't buy things unattended" guardrail:
+#   RISKY_KEYWORDS = ["buy", "purchase", "checkout", "pay", "order",
+#                     "sign in", "log in", "submit", "confirm", "delete"]
+RISKY_KEYWORDS: list[str] = []
 
 SYSTEM_PROMPT = """You are a web research agent driving a real Chromium browser through tools.
 
@@ -159,6 +168,38 @@ How to work:
 
 
 # ---------------------------------------------------------------------------
+# Public types
+# ---------------------------------------------------------------------------
+
+class AgentConfigError(RuntimeError):
+    """
+    Bad or missing provider config.
+
+    Raised instead of sys.exit() so a caller can catch it. This matters more
+    than it looks: SystemExit escaping an asyncio Task is re-raised into the
+    event loop and stops run_forever(), so a sys.exit() in here would take down
+    an embedding process (e.g. the Discord monitor) rather than just the run.
+    """
+
+
+@dataclass
+class AgentResult:
+    """What a run produced, so callers can report on it instead of scraping stdout."""
+
+    goal: str
+    status: str                       # "completed" | "max_steps" | "error"
+    final_text: str = ""              # the model's closing answer ("" if none)
+    steps: int = 0                    # tool-call steps actually executed
+    transcript_path: str | None = None
+    blocked: list[str] = field(default_factory=list)   # guardrail denial reasons
+    error: str | None = None
+
+    @property
+    def ok(self) -> bool:
+        return self.status == "completed"
+
+
+# ---------------------------------------------------------------------------
 # Guardrails
 # ---------------------------------------------------------------------------
 
@@ -170,8 +211,18 @@ def _hostname(url: str) -> str:
         return ""
 
 
-def confirm(prompt: str) -> bool:
-    """Ask the human on the terminal. Returns True only on an explicit yes."""
+def confirm(prompt: str, *, interactive: bool = True) -> bool:
+    """
+    Ask the human on the terminal. Returns True only on an explicit yes.
+
+    With interactive=False there is nobody at a terminal (e.g. the agent was
+    started by the Discord monitor), so we auto-deny instead of calling input().
+    Blocking on stdin from inside an event loop would stall the caller's whole
+    process — for a Discord bot, that means a dropped gateway heartbeat.
+    """
+    if not interactive:
+        print(f"\n⛔ {prompt} — auto-denied (non-interactive run).")
+        return False
     try:
         answer = input(f"\n⚠️  {prompt} [y/N] ").strip().lower()
     except EOFError:
@@ -179,27 +230,43 @@ def confirm(prompt: str) -> bool:
     return answer in ("y", "yes")
 
 
-def guardrail_check(tool_name: str, tool_input: dict) -> tuple[bool, str]:
+def guardrail_check(
+    tool_name: str,
+    tool_input: dict,
+    *,
+    interactive: bool = True,
+    allowed_domains: list[str] | None = None,
+    risky_keywords: list[str] | None = None,
+) -> tuple[bool, str]:
     """
-    Return (allowed, reason). `allowed=False` means the human declined.
-    We inspect the tool call and pause for confirmation on risky actions.
+    Return (allowed, reason). `allowed=False` means the action was declined.
+
+    Both lists default to the module-level constants, which ship EMPTY — so by
+    default this is a pass-through and nothing ever prompts. Pass explicit lists
+    to turn confirmation on for a single run.
     """
+    allowed_domains = ALLOWED_DOMAINS if allowed_domains is None else allowed_domains
+    risky_keywords = RISKY_KEYWORDS if risky_keywords is None else risky_keywords
+
     # Domain allowlist on navigation
-    if tool_name == "browser_navigate" and ALLOWED_DOMAINS:
+    if tool_name == "browser_navigate" and allowed_domains:
         host = _hostname(tool_input.get("url", ""))
-        if not any(host == d or host.endswith("." + d) for d in ALLOWED_DOMAINS):
-            if not confirm(f"Navigate to non-allowlisted host '{host}'?"):
-                return False, f"Human declined navigation to {host}."
+        if not any(host == d or host.endswith("." + d) for d in allowed_domains):
+            if not confirm(f"Navigate to non-allowlisted host '{host}'?", interactive=interactive):
+                return False, f"Declined navigation to {host}."
 
     # Risky-keyword scan on click/type targets
-    if tool_name in ("browser_click", "browser_type", "browser_press_key"):
+    if tool_name in ("browser_click", "browser_type", "browser_press_key") and risky_keywords:
         label = " ".join(
             str(tool_input.get(k, "")) for k in ("element", "text", "key")
         ).lower()
-        hit = next((kw for kw in RISKY_KEYWORDS if kw in label), None)
+        hit = next((kw for kw in risky_keywords if kw in label), None)
         if hit:
-            if not confirm(f"'{tool_name}' targets a risky control (matched '{hit}'): {label!r}. Proceed?"):
-                return False, f"Human declined the '{hit}' action."
+            if not confirm(
+                f"'{tool_name}' targets a risky control (matched '{hit}'): {label!r}. Proceed?",
+                interactive=interactive,
+            ):
+                return False, f"Declined the '{hit}' action."
 
     return True, ""
 
@@ -294,7 +361,7 @@ class OpenAIAdapter:
 
         key = os.environ.get(cfg["key_env"], "") if cfg["key_env"] else "ollama"
         if cfg["key_env"] and not key:
-            sys.exit(
+            raise AgentConfigError(
                 f"{cfg['key_env']} is not set. Add it to a .env file (see .env.example).\n"
                 f"For Gemini, create a free key at https://aistudio.google.com/apikey"
             )
@@ -396,7 +463,7 @@ class AnthropicAdapter:
         import anthropic
 
         if not os.environ.get(cfg["key_env"]):
-            sys.exit(f"{cfg['key_env']} is not set. Add it to a .env file (see .env.example).")
+            raise AgentConfigError(f"{cfg['key_env']} is not set. Add it to a .env file (see .env.example).")
         self.client = anthropic.Anthropic()
         self.model = model
 
@@ -446,7 +513,7 @@ class AnthropicAdapter:
 def build_adapter():
     """Pick the adapter for LLM_PROVIDER and report what we're using."""
     if PROVIDER not in PROVIDERS:
-        sys.exit(f"Unknown LLM_PROVIDER {PROVIDER!r}. Options: {', '.join(PROVIDERS)}")
+        raise AgentConfigError(f"Unknown LLM_PROVIDER {PROVIDER!r}. Options: {', '.join(PROVIDERS)}")
     cfg = dict(PROVIDERS[PROVIDER])
     model = os.environ.get("LLM_MODEL", "").strip() or cfg["model"]
     # Escape hatch: point at any other OpenAI-compatible endpoint (a local
@@ -502,6 +569,8 @@ async def hold_browser_open() -> None:
     subprocess dies and the window closes. Runs input() on a worker thread so
     the event loop (and the MCP connection) stays responsive.
     """
+    if not sys.stdin.isatty():
+        return   # nobody could press Enter; never wedge a non-interactive run
     print("\n🔎 Browser left open so you can inspect the result.")
     try:
         await asyncio.to_thread(input, "   Press Enter to close it… ")
@@ -509,11 +578,15 @@ async def hold_browser_open() -> None:
         pass  # no TTY, or the user hit Ctrl-C — just tear down
 
 
-def write_transcript(goal: str, lines: list[str]) -> str | None:
+def write_transcript(goal: str, lines: list[str], *,
+                     headless: bool | None = None,
+                     provider: str = PROVIDER) -> str | None:
     """Save a Markdown record of the run to runs/. Returns the path, or None."""
     if not TRANSCRIPT:
         return None
     from datetime import datetime
+
+    headless = HEADLESS if headless is None else headless
 
     runs = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "runs")
     os.makedirs(runs, exist_ok=True)
@@ -523,8 +596,8 @@ def write_transcript(goal: str, lines: list[str]) -> str | None:
         f"# Agent run — {stamp}",
         "",
         f"- **Goal:** {goal}",
-        f"- **Provider:** {PROVIDER}",
-        f"- **Headless:** {HEADLESS}",
+        f"- **Provider:** {provider}",
+        f"- **Headless:** {headless}",
         "",
         "## Steps",
         "",
@@ -538,82 +611,172 @@ def write_transcript(goal: str, lines: list[str]) -> str | None:
 # The agent loop
 # ---------------------------------------------------------------------------
 
-async def run_agent(goal: str) -> None:
-    adapter = build_adapter()   # .env already loaded at import time
+async def run_agent(
+    goal: str,
+    *,
+    headless: bool | None = None,
+    keep_open: bool | None = None,
+    interactive: bool | None = None,
+    max_steps: int | None = None,
+    step_delay: float | None = None,
+    allowed_domains: list[str] | None = None,
+    risky_keywords: list[str] | None = None,
+) -> AgentResult:
+    """
+    Drive the browser until the model answers, then return what happened.
+
+    Every keyword defaults to None meaning "use the module-level value", so the
+    CLI behaves exactly as before. They exist because the module-level flags are
+    read once at IMPORT time: a long-lived caller (the Discord monitor) imports
+    this at startup, so it must be able to set headless/keep_open per call
+    rather than inheriting whatever the environment looked like back then.
+
+    interactive=False is for callers with no terminal — guardrail confirmations
+    auto-deny instead of blocking on input(), which would otherwise stall the
+    caller's event loop indefinitely.
+    """
+    # Resolve every knob to a local, then use the locals below — never the globals.
+    headless = HEADLESS if headless is None else headless
+    keep_open = KEEP_OPEN if keep_open is None else keep_open
+    interactive = True if interactive is None else interactive
+    max_steps = MAX_STEPS if max_steps is None else max_steps
+    step_delay = STEP_DELAY if step_delay is None else step_delay
+
+    status = "error"
+    final_text = ""      # the model's closing answer (no tool calls alongside it)
+    last_text = ""       # most recent narration, whether or not it was the last turn
+    steps_done = 0
+    blocked: list[str] = []
+    error: str | None = None
+    log: list[str] = []
+
+    adapter = build_adapter()   # raises AgentConfigError; nothing has run yet
 
     # Launch Playwright MCP as a subprocess.
     # Current @playwright/mcp is HEADED BY DEFAULT and only accepts `--headless`;
     # the old `--headed` flag was removed and passing it kills the subprocess
     # with "unknown option" (surfacing here as MCPError: Connection closed).
     args = ["-y", "@playwright/mcp@latest"]
-    if HEADLESS:
+    if headless:
         args.append("--headless")
     server = StdioServerParameters(command="npx", args=args)
 
-    async with stdio_client(server) as (read, write):
-        async with ClientSession(read, write) as session:
-            await session.initialize()
-            tool_list = (await session.list_tools()).tools
-            tools = adapter.tools(tool_list)
-            print(f"Connected to Playwright MCP — {len(tools)} tools available.")
-            print(f"Goal: {goal}\n")
+    try:
+        async with stdio_client(server) as (read, write):
+            async with ClientSession(read, write) as session:
+                await session.initialize()
+                tool_list = (await session.list_tools()).tools
+                tools = adapter.tools(tool_list)
+                print(f"Connected to Playwright MCP — {len(tools)} tools available.")
+                print(f"Goal: {goal}\n")
 
-            messages = adapter.seed(goal)
-            log: list[str] = []
+                messages = adapter.seed(goal)
 
-            for step in range(1, MAX_STEPS + 1):
-                text, calls, wants_tools = adapter.complete(messages, tools)
-                adapter.record_assistant(messages, text, calls)
+                for step in range(1, max_steps + 1):
+                    steps_done = step
 
-                if text.strip():
-                    print(f"\n🤖 {text.strip()}\n")
-                    log.append(f"**Model:** {text.strip()}\n")
+                    # adapter.complete() uses the SYNCHRONOUS OpenAI/Anthropic
+                    # client — a blocking 5-30s HTTPS call. On the caller's event
+                    # loop that stalls everything else (for a Discord bot, the
+                    # gateway heartbeat). to_thread keeps the loop responsive;
+                    # adapter._last is written on the worker and read after the
+                    # await, so the ordering is safe.
+                    text, calls, wants_tools = await asyncio.to_thread(
+                        adapter.complete, messages, tools
+                    )
+                    adapter.record_assistant(messages, text, calls)
 
-                if not wants_tools:
-                    print("✅ Done.")
-                    log.append("\n## Result\n\n✅ Finished normally.")
-                    break   # NOT return — the browser must stay up for KEEP_OPEN
+                    if text.strip():
+                        last_text = text.strip()
+                        print(f"\n🤖 {last_text}\n")
+                        log.append(f"**Model:** {last_text}\n")
 
-                results = []
-                for call in calls:
-                    print(f"[{step}] → {call['name']}({_short(call['input'])})")
-                    log.append(f"- `[{step}]` **{call['name']}**(`{_short(call['input'], 200)}`)")
+                    if not wants_tools:
+                        final_text = text.strip()
+                        status = "completed"
+                        print("✅ Done.")
+                        log.append("\n## Result\n\n✅ Finished normally.")
+                        break   # NOT return — the browser must stay up for keep_open
 
-                    allowed, reason = guardrail_check(call["name"], call["input"])
-                    if not allowed:
-                        results.append({"id": call["id"], "text": f"BLOCKED: {reason}",
-                                        "images": [], "is_error": True})
-                        log.append(f"  - ⛔ blocked: {reason}")
-                        continue
+                    results = []
+                    for call in calls:
+                        print(f"[{step}] → {call['name']}({_short(call['input'])})")
+                        log.append(f"- `[{step}]` **{call['name']}**(`{_short(call['input'], 200)}`)")
 
-                    try:
-                        raw = await session.call_tool(call["name"], call["input"])
-                        body, images, errored = mcp_result_to_parts(raw)
-                        results.append({"id": call["id"], "text": body, "images": images,
-                                        "is_error": errored})
-                        head = " ".join(body.split())[:160]
-                        log.append(f"  - {'⚠️ error' if errored else '✓'} {head}")
-                    except Exception as e:  # keep the loop alive on a single failure
-                        results.append({"id": call["id"], "text": f"ERROR: {e}",
-                                        "images": [], "is_error": True})
-                        log.append(f"  - ⚠️ exception: {e}")
+                        allowed, reason = guardrail_check(
+                            call["name"], call["input"],
+                            interactive=interactive,
+                            allowed_domains=allowed_domains,
+                            risky_keywords=risky_keywords,
+                        )
+                        if not allowed:
+                            blocked.append(reason)
+                            results.append({"id": call["id"], "text": f"BLOCKED: {reason}",
+                                            "images": [], "is_error": True})
+                            log.append(f"  - ⛔ blocked: {reason}")
+                            continue
 
-                    if STEP_DELAY:
-                        await asyncio.sleep(STEP_DELAY)
+                        try:
+                            raw = await session.call_tool(call["name"], call["input"])
+                            body, images, errored = mcp_result_to_parts(raw)
+                            results.append({"id": call["id"], "text": body, "images": images,
+                                            "is_error": errored})
+                            head = " ".join(body.split())[:160]
+                            log.append(f"  - {'⚠️ error' if errored else '✓'} {head}")
+                        except Exception as e:  # keep the loop alive on a single failure
+                            results.append({"id": call["id"], "text": f"ERROR: {e}",
+                                            "images": [], "is_error": True})
+                            log.append(f"  - ⚠️ exception: {e}")
 
-                adapter.record_results(messages, results)
-            else:
-                # Loop ran to MAX_STEPS without the model ever finishing.
-                print(f"⛔ Hit MAX_STEPS ({MAX_STEPS}) without finishing.")
-                log.append(f"\n## Result\n\n⛔ Hit MAX_STEPS ({MAX_STEPS}) without finishing.")
+                        if step_delay:
+                            await asyncio.sleep(step_delay)
 
-            # Still inside the MCP session, so Chromium is still alive.
-            if KEEP_OPEN:
-                await hold_browser_open()
+                    adapter.record_results(messages, results)
+                else:
+                    # Loop ran to max_steps without the model ever finishing.
+                    status = "max_steps"
+                    print(f"⛔ Hit MAX_STEPS ({max_steps}) without finishing.")
+                    log.append(f"\n## Result\n\n⛔ Hit MAX_STEPS ({max_steps}) without finishing.")
+                
+                    # No closing answer was produced. Pass along the model's last
+                    # narration if there was one, but LABEL it — an unlabelled
+                    # half-finished thought reads like a conclusion to whoever
+                    # gets this in Telegram. `last_text` can be empty if the model
+                    # only ever emitted tool calls and never narrated.
+                    if last_text:
+                        final_text = (
+                            f"⚠️ Incomplete — stopped after {max_steps} steps without "
+                            f"finishing. Last thing the agent said:\n\n{last_text}"
+                        )
+                    else:
+                        final_text = (
+                            f"⚠️ Incomplete — stopped after {max_steps} steps without "
+                            f"producing an answer. See the transcript for what it tried."
+                        )
 
-    path = write_transcript(goal, log)
+                # Still inside the MCP session, so Chromium is still alive.
+                if keep_open:
+                    await hold_browser_open()
+
+    except Exception as e:
+        status = "error"
+        error = f"{type(e).__name__}: {e}"
+        print(f"\n💥 Run failed: {error}")
+        log.append(f"\n## Result\n\n💥 Failed: {error}")
+
+    path = write_transcript(goal, log, headless=headless)
     if path:
         print(f"📝 Transcript: {path}")
+
+    return AgentResult(
+        goal=goal,
+        status=status,
+        final_text=final_text,
+        steps=steps_done,
+        transcript_path=path,
+        blocked=blocked,
+        error=error,
+    )
 
 
 def _short(d: dict, n: int = 80) -> str:
@@ -623,4 +786,9 @@ def _short(d: dict, n: int = 80) -> str:
 
 if __name__ == "__main__":
     task = " ".join(sys.argv[1:]) or input("What should the agent research? ")
-    asyncio.run(run_agent(task))
+    try:
+        asyncio.run(run_agent(task))
+    except AgentConfigError as e:
+        # Same message and exit code the old sys.exit() produced. The raise/catch
+        # split exists so importers can handle it instead of dying.
+        sys.exit(str(e))

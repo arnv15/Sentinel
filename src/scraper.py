@@ -47,7 +47,9 @@ except ImportError:
 # ==============================================================================
 # Secrets come from the environment (see .env.example). Never hardcode them here.
 TOKEN = os.environ.get("DISCORD_TOKEN", "")
-TARGET_CHANNEL_ID = int(os.environ.get("TARGET_CHANNEL_ID", "0"))  # channel to monitor
+# `or 0` matters: a present-but-empty TARGET_CHANNEL_ID= in .env makes
+# int("") raise at import, crashing before _check_config can explain why.
+TARGET_CHANNEL_ID = int(os.environ.get("TARGET_CHANNEL_ID", "0") or 0)  # channel to monitor
 
 # Only alert when the item TITLE contains one of these pack names
 # (case-insensitive). These are the valuable sets worth buying; everything
@@ -73,6 +75,57 @@ TELEGRAM_CHAT_IDS = [
     for cid in os.environ.get("TELEGRAM_CHAT_IDS", "").split(",")
     if cid.strip()
 ]
+
+# ----- Phase 2 hand-off: fire the browser agent on a match -----
+# All off by default: with AGENT_ENABLED unset this file behaves exactly as it
+# always has, and never imports the Phase 2 dependencies (openai / mcp).
+
+
+def _agent_flag(name, default):
+    raw = os.environ.get(name, "").strip().lower()
+    if raw in ("1", "true", "yes"):
+        return True
+    if raw in ("0", "false", "no"):
+        return False
+    return default
+
+
+def _agent_num(name, default, cast=float):
+    try:
+        raw = os.environ.get(name, "").strip()
+        return cast(raw) if raw else default
+    except ValueError:
+        return default
+
+
+AGENT_ENABLED = _agent_flag("AGENT_ENABLED", False)
+
+# Where the agent is pointed.
+#   fixture — the MockMart test storefront. The real product link from the alert
+#             is NOT put in the prompt, so the agent can't wander onto a real
+#             retailer. This is the default.
+#   live    — the actual product URL from the alert.
+AGENT_TARGET_MODE = os.environ.get("AGENT_TARGET_MODE", "fixture").strip().lower()
+AGENT_FIXTURE_URL = os.environ.get(
+    "AGENT_FIXTURE_URL", "https://arnv15.github.io/Sentinel/mock-store/"
+)
+
+# Single-flight + cooldown. A restock burst should NOT queue up a backlog of
+# runs about items that sold out twenty minutes ago — extra triggers are dropped.
+AGENT_COOLDOWN_SECONDS = _agent_num("AGENT_COOLDOWN_SECONDS", 300.0)
+AGENT_TIMEOUT_SECONDS = _agent_num("AGENT_TIMEOUT_SECONDS", 600.0)
+
+# One step is roughly one API request. Gemini's free tier is ~1500/day, so the
+# CLI default of 40 would cap you near 37 runs/day. 15 keeps some headroom.
+AGENT_MAX_STEPS = _agent_num("AGENT_MAX_STEPS", 15, int)
+AGENT_MAX_RUNS_PER_DAY = _agent_num("AGENT_MAX_RUNS_PER_DAY", 20, int)
+
+AGENT_HEADLESS = _agent_flag("AGENT_HEADLESS", False)   # headed: watch it work
+AGENT_ANNOUNCE = _agent_flag("AGENT_ANNOUNCE", True)    # Telegram the prompt on start
+
+# Optional prompt override. Placeholders: {item} {price} {store} {stock}
+# {limit} {link} {sku} {target}. In fixture mode {link} is always empty.
+AGENT_TASK_TEMPLATE = os.environ.get("AGENT_TASK_TEMPLATE", "").strip()
 
 # ==============================================================================
 # PARSING ENGINE  (pure functions — no Discord objects, so they're easy to test)
@@ -297,6 +350,129 @@ def format_telegram(parsed, jump_url):
 
 
 # ==============================================================================
+# AGENT PROMPT BUILDING  (pure functions — no Discord objects, easy to test)
+# ==============================================================================
+_AGENT_FIELD_MAX = 120
+
+
+def _clean_field(value, limit=_AGENT_FIELD_MAX):
+    """
+    Flatten one parsed field for safe inclusion in an LLM prompt.
+
+    Embed text is written by whoever posts in the Discord channel, i.e. it is
+    untrusted input heading straight into a prompt. Collapse to one line, strip
+    URLs (so a planted link can't redirect the agent), and cap the length.
+    """
+    if not value:
+        return ""
+    text = " ".join(str(value).split())
+    text = _URL_RE.sub("", text)
+    text = text.strip()
+    return text[:limit] + "…" if len(text) > limit else text
+
+
+def build_agent_goal(parsed, *, mode=None, fixture_url=None, template=None):
+    """
+    Turn a parsed restock alert into the goal string handed to run_agent().
+
+    Returns (goal, effective_mode). `effective_mode` may differ from `mode`:
+    live mode falls back to fixture when the alert carried no usable link.
+    """
+    mode = (AGENT_TARGET_MODE if mode is None else mode).strip().lower()
+    fixture_url = AGENT_FIXTURE_URL if fixture_url is None else fixture_url
+    template = AGENT_TASK_TEMPLATE if template is None else template
+
+    item = _clean_field(parsed.get("item")) or "the restocked item"
+    price = _clean_field(parsed.get("price")) or "unknown"
+    store = _clean_field(parsed.get("store")) or "unknown"
+    stock = _clean_field(parsed.get("stock")) or "unknown"
+    limit = _clean_field(parsed.get("limit")) or "unknown"
+    sku = _clean_field(parsed.get("sku")) or "unknown"
+    link = (parsed.get("link") or "").strip()
+
+    if mode == "live" and link:
+        target = link
+    else:
+        mode = "fixture"          # no link to visit -> fall back to the fixture
+        target = fixture_url
+        link = ""                 # never leak the real URL into a fixture prompt
+
+    if template:
+        from collections import defaultdict
+        fields = defaultdict(str, item=item, price=price, store=store, stock=stock,
+                             limit=limit, link=link, sku=sku, target=target)
+        return template.format_map(fields), mode
+
+    if mode == "live":
+        goal = (
+            f"Go to {target} and report what you find about this product: "
+            f"the current price, whether it is in stock, and any purchase limit. "
+            f"The restock alert claimed price {price}, stock {stock}, limit {limit}. "
+            f"Say whether the page agrees with the alert, then stop."
+        )
+        return goal, mode
+
+    # ---- fixture mode (the default) ----
+    # TODO(human): write the instruction the agent follows on a restock.
+    # Everything else is wired: this string becomes run_agent()'s goal, and
+    # whatever the agent replies is sent to your Telegram.
+    #
+    # Available, already cleaned: item, price, store, stock, limit, sku, target
+    # (`target` is the MockMart URL; `link` is deliberately empty here).
+    #
+    # Set `instruction` to a few sentences telling the agent what to do.
+    instruction = ""
+
+    return instruction, mode
+
+
+def format_agent_start(goal, parsed, mode, target):
+    """Telegram message announcing the prompt the agent is about to run."""
+    def esc(v):
+        return html.escape(str(v)) if v is not None else "—"
+
+    return "\n".join([
+        "🤖 <b>Agent starting</b>",
+        "",
+        f"🛍 <b>Item:</b> {esc(parsed.get('item') or '—')}",
+        f"🎯 <b>Target:</b> {esc(mode)} — {esc(target)}",
+        "",
+        "<b>Prompt:</b>",
+        f"<pre>{esc(goal)}</pre>",
+    ])
+
+
+def format_agent_result(result, parsed):
+    """Telegram message reporting how the run went."""
+    def esc(v):
+        return html.escape(str(v)) if v is not None else "—"
+
+    badge = {"completed": "✅ Agent finished",
+             "max_steps": "⛔ Agent ran out of steps",
+             "error": "💥 Agent failed"}.get(result.status, "Agent done")
+
+    body = result.final_text or result.error or "(no answer produced)"
+    # Telegram hard-caps a message at 4096 chars; leave room for the wrapper.
+    if len(body) > 3500:
+        body = body[:3500] + "\n… (truncated — see the transcript)"
+
+    lines = [
+        f"<b>{esc(badge)}</b>",
+        "",
+        f"🛍 <b>Item:</b> {esc(parsed.get('item') or '—')}",
+        f"🔢 <b>Steps:</b> {esc(result.steps)}",
+        "",
+        esc(body),
+    ]
+    if result.blocked:
+        lines += ["", "⛔ <b>Blocked actions:</b>"]
+        lines += [f"• {esc(r)}" for r in result.blocked]
+    if result.transcript_path:
+        lines += ["", f"📝 <code>{esc(os.path.basename(result.transcript_path))}</code>"]
+    return "\n".join(lines)
+
+
+# ==============================================================================
 # TELEGRAM DELIVERY
 # ==============================================================================
 async def send_telegram(session, text):
@@ -318,6 +494,146 @@ async def send_telegram(session, text):
                     print(f"[Warning] Telegram {resp.status} for {chat_id}: {body[:200]}")
         except Exception as e:  # one bad recipient must not block the others
             print(f"[Error] Telegram send to {chat_id} failed: {e}")
+
+
+# ==============================================================================
+# AGENT DISPATCH  (single-flight + cooldown + daily cap)
+# ==============================================================================
+# asyncio.Lock() is safe to construct at import on Python 3.10+ — primitives no
+# longer bind to a loop at creation time.
+_agent_lock = asyncio.Lock()
+_agent_next_allowed = 0.0        # loop.time() before which new triggers are dropped
+_agent_runs_today = 0
+_agent_day = None
+_agent_tasks = set()             # strong refs: asyncio may GC a bare running task
+_run_agent = None
+
+
+def _load_agent():
+    """
+    Import browser_agent on first use.
+
+    Lazy on purpose: with AGENT_ENABLED off, a Phase-1-only install never has to
+    have openai/mcp installed. The sys.path line makes the import work even when
+    this file is run as `python -m src.scraper` rather than by path.
+    """
+    global _run_agent
+    if _run_agent is None:
+        here = os.path.dirname(os.path.abspath(__file__))
+        if here not in sys.path:
+            sys.path.insert(0, here)
+        from browser_agent import run_agent
+        _run_agent = run_agent
+    return _run_agent
+
+
+def _quota_ok():
+    """True if we are under the daily cap. Counter resets on date change."""
+    global _agent_runs_today, _agent_day
+    from datetime import date
+
+    today = date.today()
+    if _agent_day != today:
+        _agent_day, _agent_runs_today = today, 0
+    if _agent_runs_today >= AGENT_MAX_RUNS_PER_DAY:
+        return False
+    _agent_runs_today += 1
+    return True
+
+
+def _maybe_dispatch_agent(parsed, jump_url):
+    """
+    Gate and launch an agent run. Deliberately NOT async.
+
+    Every check and the reservation happen with no `await` between them. If this
+    were a coroutine, two messages arriving in the same tick could both see an
+    unlocked lock and both launch — the classic check-then-act race.
+    """
+    global _agent_next_allowed
+    if not AGENT_ENABLED:
+        return
+
+    loop = asyncio.get_running_loop()
+    now = loop.time()
+
+    if _agent_lock.locked():
+        print("[Agent] skipped — a run is already in progress")
+        return
+    if now < _agent_next_allowed:
+        print(f"[Agent] skipped — cooldown, {_agent_next_allowed - now:.0f}s left")
+        return
+    if not _quota_ok():
+        print(f"[Agent] skipped — daily cap ({AGENT_MAX_RUNS_PER_DAY}) reached")
+        return
+
+    _agent_next_allowed = now + AGENT_COOLDOWN_SECONDS   # reserve BEFORE awaiting
+    task = asyncio.create_task(_run_agent_for_alert(parsed, jump_url))
+    _agent_tasks.add(task)
+    task.add_done_callback(_agent_tasks.discard)
+
+
+async def _send(text):
+    """
+    Send one Telegram message on its own session.
+
+    on_message's session is closed the moment that handler returns, and the
+    agent task outlives it — reusing it would raise "Session is closed".
+    """
+    async with aiohttp.ClientSession() as session:
+        await send_telegram(session, text)
+
+
+async def _run_agent_for_alert(parsed, jump_url):
+    """Announce, run the agent, report back. Never lets a failure reach the bot."""
+    global _agent_next_allowed
+    async with _agent_lock:
+        try:
+            run_agent = _load_agent()
+            goal, mode = build_agent_goal(parsed)
+            target = AGENT_FIXTURE_URL if mode == "fixture" else parsed.get("link")
+
+            if not goal.strip():
+                await _send("⚠️ Agent not run: the goal template is empty "
+                            "(see build_agent_goal in scraper.py).")
+                return
+
+            print(f"[Agent] starting ({mode}) -> {parsed.get('item')!r}")
+            if AGENT_ANNOUNCE:
+                await _send(format_agent_start(goal, parsed, mode, target))
+
+            result = await asyncio.wait_for(
+                run_agent(
+                    goal,
+                    headless=AGENT_HEADLESS,   # headed by default: watch it work
+                    keep_open=False,           # must never wait on Enter here
+                    interactive=False,         # no terminal: never call input()
+                    max_steps=AGENT_MAX_STEPS,
+                ),
+                timeout=AGENT_TIMEOUT_SECONDS,
+            )
+            print(f"[Agent] {result.status} in {result.steps} steps")
+            await _send(format_agent_result(result, parsed))
+
+        except asyncio.CancelledError:
+            raise
+        except asyncio.TimeoutError:
+            print(f"[Agent] timed out after {AGENT_TIMEOUT_SECONDS:.0f}s")
+            try:
+                await _send(f"⏱ Agent timed out after {AGENT_TIMEOUT_SECONDS:.0f}s.")
+            except Exception:
+                pass
+        except BaseException as e:
+            # BaseException, not Exception: a SystemExit escaping a Task is
+            # re-raised into the event loop and would stop bot.run() outright.
+            import traceback
+            traceback.print_exc()
+            try:
+                await _send(f"💥 Agent failed: {html.escape(f'{type(e).__name__}: {e}')}")
+            except Exception:
+                pass
+        finally:
+            # Measure the cooldown from the finish too, not just the start.
+            _agent_next_allowed = asyncio.get_running_loop().time() + AGENT_COOLDOWN_SECONDS
 
 
 # ==============================================================================
@@ -349,6 +665,12 @@ async def on_ready():
     print(f"Logged in as: {bot.user}")
     print(f"Monitoring channel: {TARGET_CHANNEL_ID}")
     print(f"Telegram recipients: {len(TELEGRAM_CHAT_IDS)}")
+    if AGENT_ENABLED:
+        print(f"Browser agent: ON — mode={AGENT_TARGET_MODE}, "
+              f"headless={AGENT_HEADLESS}, max_steps={AGENT_MAX_STEPS}, "
+              f"cooldown={AGENT_COOLDOWN_SECONDS:.0f}s, cap={AGENT_MAX_RUNS_PER_DAY}/day")
+    else:
+        print("Browser agent: off (set AGENT_ENABLED=1 to enable)")
     print("-------------------------------")
 
 
@@ -379,6 +701,10 @@ async def on_message(message):
 
     async with aiohttp.ClientSession() as session:
         await send_telegram(session, text)
+
+    # Hand off to Phase 2. Returns immediately — the run happens in a background
+    # task so this handler never blocks Discord's gateway.
+    _maybe_dispatch_agent(parsed, message.jump_url)
 
 
 def _check_config():
