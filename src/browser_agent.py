@@ -607,6 +607,22 @@ def write_transcript(goal: str, lines: list[str], *,
     return path
 
 
+def describe_exception(e, _depth=0):
+    """
+    Flatten an exception to something a human can act on.
+
+    anyio task groups (which stdio_client and ClientSession both use) wrap any
+    failure in an ExceptionGroup, and ExceptionGroup.__str__ reports only
+    "N sub-exception(s)" — the actual cause is in .exceptions. Without walking
+    that, every failure in here reads as the same useless sentence.
+    """
+    subs = getattr(e, "exceptions", None)
+    if subs and _depth < 5:
+        return " | ".join(describe_exception(s, _depth + 1) for s in subs)
+    text = str(e).strip()
+    return f"{type(e).__name__}: {text}" if text else type(e).__name__
+
+
 # ---------------------------------------------------------------------------
 # The agent loop
 # ---------------------------------------------------------------------------
@@ -759,10 +775,17 @@ async def run_agent(
                     await hold_browser_open()
 
     except Exception as e:
+        import traceback
+
         status = "error"
-        error = f"{type(e).__name__}: {e}"
+        error = describe_exception(e)
         print(f"\n💥 Run failed: {error}")
         log.append(f"\n## Result\n\n💥 Failed: {error}")
+        # Full traceback goes in the transcript only — the Discord/Telegram
+        # message stays short, but the file has enough to actually debug with.
+        log.append("\n<details><summary>Traceback</summary>\n\n```\n"
+                   + "".join(traceback.format_exception(e)).strip()
+                   + "\n```\n</details>")
 
     path = write_transcript(goal, log, headless=headless)
     if path:
