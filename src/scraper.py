@@ -413,15 +413,18 @@ def build_agent_goal(parsed, *, mode=None, fixture_url=None, template=None):
         return goal, mode
 
     # ---- fixture mode (the default) ----
-    # TODO(human): write the instruction the agent follows on a restock.
-    # Everything else is wired: this string becomes run_agent()'s goal, and
-    # whatever the agent replies is sent to your Telegram.
-    #
+    # The instruction the agent follows on a restock. This string becomes
+    # run_agent()'s goal, and whatever the agent replies is sent to Telegram.
     # Available, already cleaned: item, price, store, stock, limit, sku, target
-    # (`target` is the MockMart URL; `link` is deliberately empty here).
-    #
-    # Set `instruction` to a few sentences telling the agent what to do.
-    instruction = ""
+    # (`target` is the MockMart URL; `link` is deliberately empty in this mode).
+    # Keep it focused — AGENT_MAX_STEPS is 15, and one step is ~one API call.
+    instruction = (
+    f"Go to {target} — a test storefront. Find '{item}' (search the two or "
+    f"three most distinctive words if the full name doesn't match). Open the "
+    f"product page, add one to the cart, then open the cart and report the "
+    f"cart total and any purchase limit that was applied. If it is out of "
+    f"stock or not listed, say so and stop."
+)
 
     return instruction, mode
 
