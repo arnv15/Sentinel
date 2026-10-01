@@ -98,6 +98,12 @@ def _agent_num(name, default, cast=float):
         return default
 
 
+# ----- Where alerts get delivered -----
+# Set either (or both). A Discord webhook needs no bot and no account: in your
+# server, Settings -> Integrations -> Webhooks -> New Webhook -> Copy URL.
+DISCORD_WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL", "").strip()
+
+
 AGENT_ENABLED = _agent_flag("AGENT_ENABLED", False)
 
 # Where the agent is pointed.
@@ -478,6 +484,62 @@ def format_agent_result(result, parsed):
 # ==============================================================================
 # TELEGRAM DELIVERY
 # ==============================================================================
+# Discord caps a webhook message at 2000 characters (Telegram allows 4096).
+_DISCORD_LIMIT = 2000
+
+
+def _html_to_discord(text):
+    """
+    Convert our Telegram-flavoured HTML into Discord markdown.
+
+    The formatters emit HTML because that is what Telegram's parse_mode wants.
+    Discord speaks markdown instead, so translate the few tags we actually use
+    and unescape the entities — otherwise alerts arrive full of visible
+    &lt;b&gt; noise.
+    """
+    out = text
+    out = re.sub(r'<a href="([^"]*)">(.*?)</a>', r"[\2](\1)", out, flags=re.S)
+    out = re.sub(r"</?b>", "**", out)
+    out = re.sub(r"<pre>(.*?)</pre>", r"```\n\1\n```", out, flags=re.S)
+    out = re.sub(r"</?code>", "`", out)
+    out = re.sub(r"<[^>]+>", "", out)          # drop anything left over
+    for entity, char in (("&lt;", "<"), ("&gt;", ">"), ("&quot;", '"'),
+                         ("&#x27;", "'"), ("&#39;", "'"), ("&amp;", "&")):
+        out = out.replace(entity, char)        # &amp; last, or it double-decodes
+    if len(out) > _DISCORD_LIMIT:
+        out = out[: _DISCORD_LIMIT - 20] + "\n… (truncated)"
+    return out
+
+
+async def send_discord(session, text):
+    """Post one message to the configured Discord webhook."""
+    if not DISCORD_WEBHOOK_URL:
+        return
+    payload = {"content": _html_to_discord(text), "allowed_mentions": {"parse": []}}
+    try:
+        async with session.post(DISCORD_WEBHOOK_URL, json=payload) as resp:
+            if resp.status in (200, 204):
+                print("[Success] Alert sent to Discord.")
+            else:
+                body = await resp.text()
+                print(f"[Warning] Discord webhook {resp.status}: {body[:200]}")
+    except Exception as e:
+        print(f"[Error] Discord webhook failed: {e}")
+
+
+async def notify(session, text):
+    """
+    Deliver one alert to every configured destination.
+
+    Each sender swallows its own errors, so a dead webhook can never stop a
+    Telegram alert (or vice versa), and neither can break the monitor.
+    """
+    if DISCORD_WEBHOOK_URL:
+        await send_discord(session, text)
+    if TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_IDS:
+        await notify(session, text)
+
+
 async def send_telegram(session, text):
     """Send `text` to every configured chat ID; failures are isolated."""
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
@@ -583,7 +645,7 @@ async def _send(text):
     agent task outlives it — reusing it would raise "Session is closed".
     """
     async with aiohttp.ClientSession() as session:
-        await send_telegram(session, text)
+        await notify(session, text)
 
 
 async def _run_agent_for_alert(parsed, jump_url):
@@ -667,7 +729,12 @@ async def on_ready():
     print("--- Sentinel Monitor Online ---")
     print(f"Logged in as: {bot.user}")
     print(f"Monitoring channel: {TARGET_CHANNEL_ID}")
-    print(f"Telegram recipients: {len(TELEGRAM_CHAT_IDS)}")
+    routes = []
+    if DISCORD_WEBHOOK_URL:
+        routes.append("Discord webhook")
+    if TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_IDS:
+        routes.append(f"Telegram ({len(TELEGRAM_CHAT_IDS)} recipient(s))")
+    print(f"Alerts via: {', '.join(routes) or 'NOTHING CONFIGURED'}")
     if AGENT_ENABLED:
         print(f"Browser agent: ON — mode={AGENT_TARGET_MODE}, "
               f"headless={AGENT_HEADLESS}, max_steps={AGENT_MAX_STEPS}, "
@@ -703,7 +770,7 @@ async def on_message(message):
     print(f"[Match] {message.id} -> {parsed.get('item')!r} @ {parsed.get('store')!r}")
 
     async with aiohttp.ClientSession() as session:
-        await send_telegram(session, text)
+        await notify(session, text)
 
     # Hand off to Phase 2. Returns immediately — the run happens in a background
     # task so this handler never blocks Discord's gateway.
@@ -717,10 +784,11 @@ def _check_config():
         missing.append("DISCORD_TOKEN")
     if not TARGET_CHANNEL_ID:
         missing.append("TARGET_CHANNEL_ID")
-    if not TELEGRAM_BOT_TOKEN:
-        missing.append("TELEGRAM_BOT_TOKEN")
-    if not TELEGRAM_CHAT_IDS:
-        missing.append("TELEGRAM_CHAT_IDS")
+    # At least one delivery route. Telegram needs both of its vars together.
+    has_discord = bool(DISCORD_WEBHOOK_URL)
+    has_telegram = bool(TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_IDS)
+    if not (has_discord or has_telegram):
+        missing.append("DISCORD_WEBHOOK_URL (or TELEGRAM_BOT_TOKEN + TELEGRAM_CHAT_IDS)")
     if missing:
         sys.exit(
             "Missing required config: "
