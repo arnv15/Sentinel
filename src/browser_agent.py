@@ -127,6 +127,32 @@ try:
 except ValueError:
     STEP_DELAY = 0.0
 
+# How many of the MOST RECENT tool results keep their full body. Older ones are
+# replaced with a short placeholder.
+#
+# Why this matters: `messages` is resent in full on every step, so by step 10
+# the request carries nine stale accessibility trees — ~6 KB each. That is the
+# main driver of token spend, and big requests are likelier to hit rate limits,
+# congestion (503) and timeouts. The model only ever acts on the LATEST
+# snapshot anyway: refs from older ones are stale and it is told not to use them.
+#
+# 0 disables trimming entirely (old behaviour).
+try:
+    KEEP_SNAPSHOTS = int(os.environ.get("KEEP_SNAPSHOTS", "2") or 2)
+except ValueError:
+    KEEP_SNAPSHOTS = 2
+
+# Don't bother replacing anything already this small.
+TRIM_MIN_CHARS = 400
+
+# Retries for transient provider failures (429 / 5xx / connection errors). The
+# SDK does exponential backoff; the default of 2 was not enough to ride out
+# Gemini free-tier 503 "high demand" spikes.
+try:
+    LLM_MAX_RETRIES = int(os.environ.get("LLM_MAX_RETRIES", "5") or 5)
+except ValueError:
+    LLM_MAX_RETRIES = 5
+
 # Write a Markdown transcript of each run to runs/. Answers "did it actually do
 # what I asked" after the window is gone.
 TRANSCRIPT = _flag("TRANSCRIPT", True)
@@ -313,6 +339,18 @@ def sanitize_schema(node):
     return out
 
 
+def _trimmed_note(n_chars: int) -> str:
+    """
+    What the model sees where an old page snapshot used to be.
+
+    Phrased to tell it the content is gone but recoverable, so it re-snapshots
+    rather than inventing refs from memory.
+    """
+    return (f"[Earlier tool result removed to save context ({n_chars} chars). "
+            f"Its element refs are stale now. Call browser_snapshot again if you "
+            f"need to see this page.]")
+
+
 # ---------------------------------------------------------------------------
 # Gemini thought signatures
 # ---------------------------------------------------------------------------
@@ -365,7 +403,8 @@ class OpenAIAdapter:
                 f"{cfg['key_env']} is not set. Add it to a .env file (see .env.example).\n"
                 f"For Gemini, create a free key at https://aistudio.google.com/apikey"
             )
-        self.client = OpenAI(api_key=key or "none", base_url=cfg["base_url"])
+        self.client = OpenAI(api_key=key or "none", base_url=cfg["base_url"],
+                             max_retries=LLM_MAX_RETRIES)
         self.model = model
         self.sanitize = cfg.get("sanitize_schema", False)
 
@@ -388,6 +427,26 @@ class OpenAIAdapter:
             {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user", "content": goal},
         ]
+
+    def trim(self, messages):
+        """
+        Shrink old tool results in place.
+
+        We REPLACE bodies rather than deleting messages: the API requires every
+        assistant tool_call to be answered by a matching `tool` message, so
+        dropping one is a 400. Idempotent — the placeholder is below
+        TRIM_MIN_CHARS so it never gets re-trimmed.
+        """
+        if not KEEP_SNAPSHOTS:
+            return 0
+        idx = [i for i, m in enumerate(messages) if m.get("role") == "tool"]
+        saved = 0
+        for i in idx[:-KEEP_SNAPSHOTS]:
+            body = messages[i].get("content")
+            if isinstance(body, str) and len(body) > TRIM_MIN_CHARS:
+                saved += len(body)
+                messages[i]["content"] = _trimmed_note(len(body))
+        return saved
 
     def complete(self, messages, tools):
         resp = self.client.chat.completions.create(
@@ -464,7 +523,7 @@ class AnthropicAdapter:
 
         if not os.environ.get(cfg["key_env"]):
             raise AgentConfigError(f"{cfg['key_env']} is not set. Add it to a .env file (see .env.example).")
-        self.client = anthropic.Anthropic()
+        self.client = anthropic.Anthropic(max_retries=LLM_MAX_RETRIES)
         self.model = model
 
     def tools(self, mcp_tools):
@@ -476,6 +535,29 @@ class AnthropicAdapter:
 
     def seed(self, goal):
         return [{"role": "user", "content": goal}]
+
+    def trim(self, messages):
+        """Same idea for the Anthropic shape: tool_result blocks inside user turns."""
+        if not KEEP_SNAPSHOTS:
+            return 0
+        idx = [i for i, m in enumerate(messages)
+               if m.get("role") == "user" and isinstance(m.get("content"), list)
+               and any(isinstance(b, dict) and b.get("type") == "tool_result"
+                       for b in m["content"])]
+        saved = 0
+        for i in idx[:-KEEP_SNAPSHOTS]:
+            for block in messages[i]["content"]:
+                if not (isinstance(block, dict) and block.get("type") == "tool_result"):
+                    continue
+                inner = block.get("content")
+                if not isinstance(inner, list):
+                    continue
+                size = sum(len(b.get("text", "")) for b in inner
+                           if isinstance(b, dict) and b.get("type") == "text")
+                if size > TRIM_MIN_CHARS:
+                    saved += size
+                    block["content"] = [{"type": "text", "text": _trimmed_note(size)}]
+        return saved
 
     def complete(self, messages, tools):
         resp = self.client.messages.create(
@@ -688,8 +770,16 @@ async def run_agent(
 
                 messages = adapter.seed(goal)
 
+                total_trimmed = 0
                 for step in range(1, max_steps + 1):
                     steps_done = step
+
+                    # Shrink stale snapshots BEFORE building the request, so the
+                    # saving applies to this call and not just the next one.
+                    freed = adapter.trim(messages)
+                    if freed:
+                        total_trimmed += freed
+                        print(f"    (trimmed {freed:,} chars of stale page text)")
 
                     # adapter.complete() uses the SYNCHRONOUS OpenAI/Anthropic
                     # client — a blocking 5-30s HTTPS call. On the caller's event
@@ -769,6 +859,10 @@ async def run_agent(
                             f"⚠️ Incomplete — stopped after {max_steps} steps without "
                             f"producing an answer. See the transcript for what it tried."
                         )
+
+                if total_trimmed:
+                    log.append(f"\n_Context trimming saved {total_trimmed:,} characters "
+                               f"of stale page text across the run._")
 
                 # Still inside the MCP session, so Chromium is still alive.
                 if keep_open:
