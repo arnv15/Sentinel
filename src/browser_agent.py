@@ -940,7 +940,57 @@ def _short(d: dict, n: int = 80) -> str:
     return s if len(s) <= n else s[:n] + "…"
 
 
+async def login_session(url: str, profile_dir: str | None = None) -> None:
+    """
+    Open a browser at `url`, wait for you to sign in by hand, then close it
+    cleanly so the session is written to the profile.
+
+    No model is involved — this makes zero API calls. It exists because logging
+    in is a human step: handing the task to an LLM would burn quota, and it
+    cannot type your password anyway.
+    """
+    profile_dir = BROWSER_PROFILE_DIR if profile_dir is None else profile_dir
+    if not profile_dir:
+        sys.exit(
+            "No browser profile configured, so a login would be thrown away.\n"
+            "Set BROWSER_PROFILE_DIR in .env, e.g.:\n"
+            "    BROWSER_PROFILE_DIR=~/.sentinel-browser-profile"
+        )
+    os.makedirs(profile_dir, exist_ok=True)
+
+    args = ["-y", "@playwright/mcp@latest", "--user-data-dir", profile_dir]
+    server = StdioServerParameters(command="npx", args=args)
+
+    print(f"Profile: {profile_dir}")
+    async with stdio_client(server) as (read, write):
+        async with ClientSession(read, write) as session:
+            await session.initialize()
+            await session.call_tool("browser_navigate", {"url": url})
+            print(f"\nOpened {url}")
+            print("\n  1. Sign in in the browser window.")
+            print("  2. Come back here and press Enter.")
+            print("  (Closing the window yourself instead will NOT save the session.)")
+            try:
+                await asyncio.to_thread(input, "\n  Press Enter when you're signed in… ")
+            except (EOFError, KeyboardInterrupt):
+                pass
+            # Mandatory: without a clean close Chromium never flushes its
+            # cookie store, and the login is silently lost.
+            try:
+                await session.call_tool("browser_close", {})
+                print("✅ Session saved to the profile.")
+            except Exception as e:
+                print(f"⚠️  Clean close failed — the login may not have saved: {e}")
+
+
 if __name__ == "__main__":
+    # `--login <url>` opens a browser for a manual sign-in and saves the
+    # session to BROWSER_PROFILE_DIR. No model calls, no quota used.
+    if len(sys.argv) > 1 and sys.argv[1] == "--login":
+        target_url = sys.argv[2] if len(sys.argv) > 2 else input("Log in to which URL? ")
+        asyncio.run(login_session(target_url))
+        sys.exit(0)
+
     task = " ".join(sys.argv[1:]) or input("What should the agent research? ")
     try:
         asyncio.run(run_agent(task))
