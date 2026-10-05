@@ -130,7 +130,10 @@ except ValueError:
 # Persistent browser profile. Empty = Playwright makes a throwaway temp dir per
 # run, which is why cookies and logins never survive. Point this at a directory
 # and the profile persists: log into a site once, headed, and the agent stays
-# signed in on every later run.
+# signed in on every later run. VERIFIED working — but only in combination with
+# the browser_close call at the end of run_agent(): a controlled A/B showed the
+# cookie survives with the clean close and is lost without it, because killing
+# the MCP subprocess never gives Chromium a chance to flush its cookie store.
 #
 # IMPORTANT: a profile directory can only be open in ONE browser at a time. Do
 # not run the CLI and the Discord-triggered agent against the same profile
