@@ -127,6 +127,12 @@ AGENT_MAX_STEPS = _agent_num("AGENT_MAX_STEPS", 15, int)
 AGENT_MAX_RUNS_PER_DAY = _agent_num("AGENT_MAX_RUNS_PER_DAY", 20, int)
 
 AGENT_HEADLESS = _agent_flag("AGENT_HEADLESS", False)   # headed: watch it work
+
+# Seconds to leave the browser window up after a bot-triggered run finishes, so
+# you can see the end state. A TIMED hold, not the CLI's wait-for-Enter one:
+# there is no terminal here, and blocking on stdin would pin the single-flight
+# lock forever. Counts against AGENT_TIMEOUT_SECONDS.
+AGENT_KEEP_OPEN_SECONDS = _agent_num("AGENT_KEEP_OPEN_SECONDS", 45.0)
 AGENT_ANNOUNCE = _agent_flag("AGENT_ANNOUNCE", True)    # Telegram the prompt on start
 
 # Optional prompt override. Placeholders: {item} {price} {store} {stock}
@@ -671,6 +677,7 @@ async def _run_agent_for_alert(parsed, jump_url):
                     goal,
                     headless=AGENT_HEADLESS,   # headed by default: watch it work
                     keep_open=False,           # must never wait on Enter here
+                    keep_open_seconds=0 if AGENT_HEADLESS else AGENT_KEEP_OPEN_SECONDS,
                     interactive=False,         # no terminal: never call input()
                     max_steps=AGENT_MAX_STEPS,
                 ),

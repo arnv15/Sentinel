@@ -127,6 +127,18 @@ try:
 except ValueError:
     STEP_DELAY = 0.0
 
+# Persistent browser profile. Empty = Playwright makes a throwaway temp dir per
+# run, which is why cookies and logins never survive. Point this at a directory
+# and the profile persists: log into a site once, headed, and the agent stays
+# signed in on every later run.
+#
+# IMPORTANT: a profile directory can only be open in ONE browser at a time. Do
+# not run the CLI and the Discord-triggered agent against the same profile
+# simultaneously — the second launch will fail or corrupt it.
+BROWSER_PROFILE_DIR = os.path.expanduser(
+    os.environ.get("BROWSER_PROFILE_DIR", "").strip()
+) if os.environ.get("BROWSER_PROFILE_DIR", "").strip() else ""
+
 # How many of the MOST RECENT tool results keep their full body. Older ones are
 # replaced with a short placeholder.
 #
@@ -714,6 +726,8 @@ async def run_agent(
     *,
     headless: bool | None = None,
     keep_open: bool | None = None,
+    keep_open_seconds: float = 0.0,
+    profile_dir: str | None = None,
     interactive: bool | None = None,
     max_steps: int | None = None,
     step_delay: float | None = None,
@@ -739,6 +753,7 @@ async def run_agent(
     interactive = True if interactive is None else interactive
     max_steps = MAX_STEPS if max_steps is None else max_steps
     step_delay = STEP_DELAY if step_delay is None else step_delay
+    profile_dir = BROWSER_PROFILE_DIR if profile_dir is None else profile_dir
 
     status = "error"
     final_text = ""      # the model's closing answer (no tool calls alongside it)
@@ -757,6 +772,10 @@ async def run_agent(
     args = ["-y", "@playwright/mcp@latest"]
     if headless:
         args.append("--headless")
+    if profile_dir:
+        os.makedirs(profile_dir, exist_ok=True)
+        args += ["--user-data-dir", profile_dir]
+        print(f"Using persistent browser profile: {profile_dir}")
     server = StdioServerParameters(command="npx", args=args)
 
     try:
@@ -865,8 +884,25 @@ async def run_agent(
                                f"of stale page text across the run._")
 
                 # Still inside the MCP session, so Chromium is still alive.
-                if keep_open:
+                # A timed hold works where the Enter-based one cannot: a
+                # Discord-triggered run has no terminal, and blocking on stdin
+                # would pin the single-flight lock forever.
+                if keep_open_seconds > 0:
+                    print(f"\n🔎 Leaving the browser open for {keep_open_seconds:.0f}s…")
+                    await asyncio.sleep(keep_open_seconds)
+                elif keep_open:
                     await hold_browser_open()
+
+                # Close the browser CLEANLY before the MCP subprocess is torn
+                # down. Without this, exiting the stdio_client context kills
+                # Chromium outright and it never flushes cookies or localStorage
+                # to disk — which silently makes a persistent profile useless.
+                if profile_dir:
+                    try:
+                        await session.call_tool("browser_close", {})
+                        print("Browser closed cleanly (profile saved).")
+                    except Exception as e:
+                        print(f"[warn] clean close failed, profile may not persist: {e}")
 
     except Exception as e:
         import traceback
