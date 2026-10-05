@@ -431,12 +431,15 @@ def build_agent_goal(parsed, *, mode=None, fixture_url=None, template=None):
     # (`target` is the MockMart URL; `link` is deliberately empty in this mode).
     # Keep it focused — AGENT_MAX_STEPS is 15, and one step is ~one API call.
     instruction = (
-    f"Go to {target} — a test storefront. Find '{item}' (search the two or "
-    f"three most distinctive words if the full name doesn't match). Open the "
-    f"product page, add one to the cart, then open the cart and report the "
-    f"cart total and any purchase limit that was applied. If it is out of "
-    f"stock or not listed, say so and stop."
-)
+        f"Go to {target} — a test storefront. Find '{item}' (search the two or "
+        f"three most distinctive words if the full name doesn't match). "
+        f"Open its product page FIRST. Then click 'Add to Cart' EXACTLY ONCE, "
+        f"on the product page only — do not use the Add to Cart button on a "
+        f"listing or search-results card, and do not click it a second time. "
+        f"Then open the cart and report the quantity, the cart total, and any "
+        f"purchase limit that was applied. If it is out of stock or not "
+        f"listed, say so and stop."
+    )
 
     return instruction, mode
 
